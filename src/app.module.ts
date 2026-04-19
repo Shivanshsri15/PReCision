@@ -7,6 +7,7 @@ import { AppService } from './app.service.js';
 import { envValidationSchema } from './config/env.validation.js';
 import { AuthModule } from './auth/auth.module.js';
 import { GithubModule } from './github/github.module.js';
+import { CodeReviewModule } from './code-review/code-review.module.js';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { GithubModule } from './github/github.module.js';
     }),
     AuthModule,
     GithubModule,
+    CodeReviewModule,
   ],
   controllers: [AppController],
   providers: [AppService],
