@@ -320,11 +320,6 @@ npm run start:prod
 
 **Context-first analysis** — diffs alone are not enough. Precision builds surrounding context, understands file relationships, and tracks history before forming any opinion on a PR.
 
----
-
-## License
-
-MIT
 
 ---
 
