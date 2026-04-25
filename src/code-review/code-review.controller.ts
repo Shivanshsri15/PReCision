@@ -21,8 +21,7 @@ export class CodeReviewController {
     @Param('repo') repo: string,
     @Param('pullNumber', ParseIntPipe) pullNumber: number,
     @Body() body: AnalyzePrDto,
-  ) {
-    const maxFiles = body.maxFiles ?? 5;
+    ) {
     const includeContent = body.includeContent ?? true;
 
     const pr = (await this.githubService.getPullRequest(
@@ -38,11 +37,9 @@ export class CodeReviewController {
       repo,
       pullNumber,
     )) as any[];
-
     const headSha: string | undefined = pr?.head?.sha;
-
     const files: PRFile[] = [];
-    for (const f of prFiles.slice(0, maxFiles)) {
+    for (const f of prFiles) {
       const filename: string | undefined = f?.filename;
       if (!filename) continue;
 
@@ -69,14 +66,13 @@ export class CodeReviewController {
 
       files.push({ filename, patch, content });
     }
-
     const payload: PRAnalysisPayload = {
       prId: pr?.number ?? pullNumber,
       title: pr?.title ?? `PR #${pullNumber}`,
       description: pr?.body ?? undefined,
       files,
+      extraPrompt: body.extraPrompt?.trim() || undefined,
     };
-
     return this.codeReviewService.analyzePR(payload);
   }
 }

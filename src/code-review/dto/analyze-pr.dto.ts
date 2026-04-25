@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class AnalyzePrDto {
   @IsOptional()
@@ -14,5 +14,14 @@ export class AnalyzePrDto {
   @IsOptional()
   @IsBoolean()
   includeContent?: boolean;
+
+  /**
+   * Optional user-provided instruction to enrich the final report.
+   * (Not appended to domain prompts; used in final assembly + bug prompt shaping.)
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  extraPrompt?: string;
 }
 
