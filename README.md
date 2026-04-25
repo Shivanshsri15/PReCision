@@ -821,7 +821,3 @@ This demonstrates how Precision converts a pull request into a **structured, mul
 }
 
 ---
-
-<div align="center">
-  <sub>Built in public. Follow along for technical deep-dives.</sub>
-</div>
