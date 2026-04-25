@@ -39,7 +39,10 @@ export const GraphAnnotation = Annotation.Root({
    */
   findings: Annotation<Finding[] | undefined>(),
 
-  domainReports: Annotation<Partial<Record<DomainKey, DomainReport>> | undefined>(),
+  domainReports: Annotation<Partial<Record<DomainKey, DomainReport>>>({
+    reducer: (left, right) => ({ ...(left ?? {}), ...(right ?? {}) }),
+    default: () => ({}),
+  }),
   bugDetectionPromptAddendum: Annotation<string | undefined>(),
   finalReport: Annotation<any | undefined>(),
 });
