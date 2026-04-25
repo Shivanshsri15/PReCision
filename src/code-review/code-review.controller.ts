@@ -22,7 +22,6 @@ export class CodeReviewController {
     @Param('pullNumber', ParseIntPipe) pullNumber: number,
     @Body() body: AnalyzePrDto,
   ) {
-    const maxFiles = body.maxFiles ?? 5;
     const includeContent = body.includeContent ?? true;
 
     const pr = (await this.githubService.getPullRequest(
@@ -42,7 +41,7 @@ export class CodeReviewController {
     const headSha: string | undefined = pr?.head?.sha;
 
     const files: PRFile[] = [];
-    for (const f of prFiles.slice(0, maxFiles)) {
+    for (const f of prFiles) {
       const filename: string | undefined = f?.filename;
       if (!filename) continue;
 
