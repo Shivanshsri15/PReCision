@@ -33,6 +33,50 @@ The output is structured, actionable, and context-aware — not noise.
 
 ---
 
+## API Reference
+
+### Auth — `/api/v1/auth`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `POST` | `/api/v1/auth/signup` | Public | Register user (email, password) |
+| `POST` | `/api/v1/auth/login` | Public | Login using email/password and receive JWT |
+| `GET` | `/api/v1/auth/me` | JWT | Get current authenticated user profile |
+
+---
+
+### GitHub OAuth — `/api/v1/github`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `GET` | `/api/v1/github/oauth/url` | Public | Get GitHub OAuth authorization URL |
+| `GET` | `/api/v1/github/oauth/callback` | Public | OAuth callback (`?code=&state=`) → returns application JWT |
+
+---
+
+### GitHub REST Proxy — `/api/v1/github`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `GET` | `/api/v1/github/profile` | JWT | Authenticated GitHub user profile |
+| `GET` | `/api/v1/github/repositories` | JWT | List repositories (`?page=1&perPage=20`) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/pulls` | JWT | Pull requests for repository (`?state=open`) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/pulls/:pullNumber` | JWT | Single pull request details |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/pulls/:pullNumber/files` | JWT | Changed files and patches |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/file` | JWT | File content (`?path=` required, `?ref=` optional) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/contents` | JWT | Directory listing (`?path=` optional, `?ref=` optional) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/commits` | JWT | Repository commits (`?branch=` optional) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/compare` | JWT | Compare refs (`?base=` & `?head=` required) |
+| `GET` | `/api/v1/github/repositories/:owner/:repo/diff` | JWT | Diff between refs (`?base=` & `?head=` required) |
+
+---
+
+### Code Review — `/api/v1/code-review`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport` |
+
 ## Architecture Overview
 
 ```
@@ -325,36 +369,6 @@ npm run start:prod
 ```
 
 ---
-
-## API Reference
-
-### Auth
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/github/oauth/url` | Get GitHub OAuth authorization URL |
-| `GET` | `/api/v1/github/oauth/callback` | OAuth callback — returns app JWT |
-
-### GitHub
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/github/profile` | Authenticated user profile |
-| `GET` | `/api/v1/github/repos` | User's repositories |
-| `GET` | `/api/v1/github/repos/:owner/:repo/pulls` | Pull requests for a repo |
-| `GET` | `/api/v1/github/repos/:owner/:repo/pulls/:number` | Single PR details |
-| `GET` | `/api/v1/github/repos/:owner/:repo/pulls/:number/files` | Changed files + diffs |
-
-### Code Review
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/code-review/:owner/:repo/:prNumber/analyze` | Trigger PR analysis (accepts optional `extraPrompt` in body) |
-| `GET` | `/api/v1/code-review/:owner/:repo/:prNumber/report` | Fetch latest report |
-| `GET` | `/api/v1/code-review/:owner/:repo/:prNumber/stream` | SSE stream for live updates |
-
----
-
 ## Roadmap
 
 - [x] GitHub OAuth + encrypted token storage
