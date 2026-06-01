@@ -1,0 +1,28 @@
+node_modules
+dist
+coverage
+.git
+.gitignore
+
+# Environment files (pass vars at runtime via -e or docker-compose)
+.env
+.env.*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Tests
+test
+**/*.spec.ts
+**/*.e2e-spec.ts
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+
+# Docs (not needed in image)
+README.md
+*.md
