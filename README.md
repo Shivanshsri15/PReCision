@@ -19,6 +19,7 @@
 
 ---
 
+
 ## The Problem
 
 Most AI-based code reviewers operate on raw diffs in isolation. They don't understand what the PR is trying to do, which files depend on each other, or whether the same issue was flagged and ignored three pushes ago.
