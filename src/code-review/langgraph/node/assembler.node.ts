@@ -1,4 +1,4 @@
-import { GraphState } from "../state.js";
+import { GraphState } from '../state.js';
 
 export const assemblerNode = async (state: GraphState): Promise<Partial<GraphState>> => {
   const summary = `Found ${state.findings?.length || 0} issues in PR`;
@@ -8,6 +8,7 @@ export const assemblerNode = async (state: GraphState): Promise<Partial<GraphSta
       prId: state.input.prId,
       summary,
       findings: state.findings || [],
+      relatedContextCount: state.relatedContext?.length ?? 0,
     },
   };
 };

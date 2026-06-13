@@ -1,30 +1,46 @@
-import { Annotation } from "@langchain/langgraph";
+import { Annotation } from '@langchain/langgraph';
 
 export interface PRFile {
   filename: string;
-  patch?: string;
-  content?: string;
+  patch: string;
+  content: string;
+  baseContent: string;
 }
 
 export interface PRAnalysisPayload {
   prId: number;
   title: string;
   description?: string;
+  owner: string;
+  repo: string;
+  baseBranch: string;
+  baseSha: string;
+  headSha: string;
   files: PRFile[];
+}
+
+export interface RetrievedChunk {
+  path: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+  source: string;
 }
 
 export interface Finding {
   file: string;
   issue: string;
-  severity: "low" | "medium" | "high";
+  severity: 'low' | 'medium' | 'high';
   suggestion?: string;
 }
 
 export const GraphAnnotation = Annotation.Root({
   input: Annotation<PRAnalysisPayload>(),
   cleanedInput: Annotation<PRAnalysisPayload | undefined>(),
+  relatedContext: Annotation<RetrievedChunk[] | undefined>(),
+  relatedContextFormatted: Annotation<string | undefined>(),
   findings: Annotation<Finding[] | undefined>(),
-  finalReport: Annotation<any | undefined>(),
+  finalReport: Annotation<Record<string, unknown> | undefined>(),
 });
 
 export type GraphState = typeof GraphAnnotation.State;

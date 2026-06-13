@@ -1,22 +1,29 @@
-import { GraphState } from "../state.js";
-import { createGemini } from "../gemini.factory.js";
+import { GraphState } from '../state.js';
+import { createGemini } from '../gemini.factory.js';
 
 export const reviewerNode = async (state: GraphState): Promise<Partial<GraphState>> => {
   const model = createGemini();
 
   const filesText = state.cleanedInput?.files
     .map(
-      (f) => `
-FILE: ${f.filename}
+      (file) => `
+FILE: ${file.filename}
 
 PATCH:
-${f.patch || ""}
+${file.patch}
 
-CONTENT:
-${f.content || ""}
-`
+BASE (old):
+${file.baseContent}
+
+HEAD (new):
+${file.content}
+`,
     )
-    .join("\n------------------\n");
+    .join('\n------------------\n');
+
+  const relatedContext = state.relatedContextFormatted?.trim()
+    ? `\n${state.relatedContextFormatted}\n`
+    : '';
 
   const prompt = `
 You are a senior software engineer doing a PR review.
@@ -28,6 +35,8 @@ ${state.cleanedInput?.title}
 
 FILES:
 ${filesText}
+${relatedContext}
+Use related context to detect cross-file breakage, duplicate utilities, missing tests, and architectural impact. Do not repeat findings about code already shown in FILES.
 
 Return ONLY this JSON structure with no markdown, no backticks, no explanation:
 {
@@ -45,22 +54,22 @@ Return ONLY this JSON structure with no markdown, no backticks, no explanation:
   const response = await model.invoke(prompt);
 
   const rawContent =
-    typeof response.content === "string"
+    typeof response.content === 'string'
       ? response.content
       : Array.isArray(response.content)
-      ? response.content.map((c: any) => c.text ?? "").join("")
-      : "";
+        ? response.content.map((part: any) => part.text ?? '').join('')
+        : '';
 
   const cleaned = rawContent
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
     .trim();
 
-  let parsed;
+  let parsed: { findings?: GraphState['findings'] };
   try {
     parsed = JSON.parse(cleaned);
-  } catch (e) {
-    console.error("Failed to parse LLM response:", cleaned);
+  } catch {
+    console.error('Failed to parse LLM response:', cleaned);
     parsed = { findings: [] };
   }
 
