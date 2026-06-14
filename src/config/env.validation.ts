@@ -20,5 +20,13 @@ export const envValidationSchema = Joi.object({
     .default('https://github.com/login/oauth/access_token'),
   GITHUB_OAUTH_SCOPES: Joi.string()
     .default('read:user user:email repo pull_request:read'),
+  GEMINI_API_KEY: Joi.string().required(),
+  GEMINI_MODEL: Joi.string().default('gemini-2.0-flash'),
+  EMBEDDING_MODEL: Joi.string().default('gemini-embedding-001'),
+  EMBEDDING_DIMS: Joi.number().integer().default(768),
+  VECTOR_INDEX_NAME: Joi.string().default('repo_vectors_index'),
+  GITHUB_WEBHOOK_SECRET: Joi.string().required(),
+  INDEX_MAX_FILES: Joi.number().integer().min(1).default(1000),
+  ALLOWED_REVIEW_BRANCHES: Joi.string().default('main,master'),
 }).unknown(true);
 

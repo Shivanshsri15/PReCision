@@ -1,9 +1,19 @@
-import { GraphState } from "../state.js";
+import { GraphState } from '../state.js';
+
+const LOG_PREFIX = '[code-review]';
 
 export const inputGuardNode = async (state: GraphState): Promise<GraphState> => {
-
   const cleanedFiles = state.input.files
-    .filter((f) => f.patch || f.content)
+    .filter(
+      (file) =>
+        file.patch.trim().length > 0 ||
+        file.content.trim().length > 0 ||
+        file.baseContent.trim().length > 0,
+    )
+
+  console.log(
+    `${LOG_PREFIX} inputGuard: ${state.input.files.length} → ${cleanedFiles.length} files`,
+  );
 
   return {
     ...state,

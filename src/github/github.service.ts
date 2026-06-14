@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import type { StringValue } from 'ms';
 import { URLSearchParams } from 'url';
 import { AuthService } from '../auth/auth.service.js';
@@ -14,6 +14,9 @@ import { TokenEncryptionService } from '../common/services/token-encryption.serv
 import { decodeGithubRepositoryFileContentIfApplicable } from './github.helpers.js';
 import type {
   GithubOauthState,
+  GithubPushWebhookPayload,
+  GithubTreeEntry,
+  GithubWebhook,
   GithubUserEmail,
   GithubUserProfile,
 } from './github.types.js';
@@ -215,16 +218,240 @@ export class GithubService {
     filePath: string,
     ref?: string,
   ) {
+    return this.getRepositoryFileForUserId(
+      user.userId,
+      owner,
+      repo,
+      filePath,
+      ref,
+    );
+  }
+
+  async resolveBranchHead(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<string> {
+    return this.resolveBranchHeadForUserId(user.userId, owner, repo, branch);
+  }
+
+  async resolveBranchHeadForUserId(
+    userId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<string> {
+    const payload = await this.githubRequestForUserId<{ sha: string }>(
+      userId,
+      `/repos/${owner}/${repo}/commits/${encodeURIComponent(branch)}`,
+    );
+    return payload.sha;
+  }
+
+  async getTree(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    commitSha: string,
+    recursive = true,
+  ) {
+    return this.getTreeForUserId(user.userId, owner, repo, commitSha, recursive);
+  }
+
+  async getTreeForUserId(
+    userId: string,
+    owner: string,
+    repo: string,
+    commitSha: string,
+    recursive = true,
+  ): Promise<GithubTreeEntry[]> {
+    const commit = await this.githubRequestForUserId<{ tree: { sha: string } }>(
+      userId,
+      `/repos/${owner}/${repo}/git/commits/${commitSha}`,
+    );
+
+    const query = recursive ? '?recursive=1' : '';
+    const tree = await this.githubRequestForUserId<{ tree: GithubTreeEntry[] }>(
+      userId,
+      `/repos/${owner}/${repo}/git/trees/${commit.tree.sha}${query}`,
+    );
+
+    return tree.tree ?? [];
+  }
+
+  async getRepositoryFileForUserId(
+    userId: string,
+    owner: string,
+    repo: string,
+    filePath: string,
+    ref?: string,
+  ) {
     const normalized = filePath.replace(/^\/+/, '');
     if (!normalized) {
       throw new BadRequestException('File path is required');
     }
 
-    const data = await this.githubRequest(
-      user.userId,
+    const data = await this.githubRequestForUserId(
+      userId,
       this.buildContentsApiPath(owner, repo, normalized, ref),
     );
     return decodeGithubRepositoryFileContentIfApplicable(data);
+  }
+
+  async listRepositoryWebhooks(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+  ) {
+    return this.githubRequest<GithubWebhook[]>(
+      user.userId,
+      `/repos/${owner}/${repo}/hooks`,
+    );
+  }
+
+  async createRepositoryWebhook(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    webhookUrl: string,
+    secret: string,
+  ) {
+    return this.githubRequest<GithubWebhook>(
+      user.userId,
+      `/repos/${owner}/${repo}/hooks`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'web',
+          active: true,
+          events: ['push'],
+          config: {
+            url: webhookUrl,
+            content_type: 'json',
+            secret,
+            insecure_ssl: '0',
+          },
+        }),
+      },
+    );
+  }
+
+  async deleteRepositoryWebhook(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    hookId: number,
+  ) {
+    await this.githubRequestForUserId(
+      user.userId,
+      `/repos/${owner}/${repo}/hooks/${hookId}`,
+      { method: 'DELETE' },
+      false,
+    );
+  }
+
+  normalizeWebhookUrl(url: string): string {
+    return url.trim().replace(/\/+$/, '');
+  }
+
+  verifyWebhookSignature(rawBody: Buffer, signatureHeader?: string): boolean {
+    const secret = this.config.getOrThrow<string>('GITHUB_WEBHOOK_SECRET');
+    if (!signatureHeader?.startsWith('sha256=')) {
+      return false;
+    }
+
+    const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+    const received = signatureHeader.slice('sha256='.length);
+
+    try {
+      return timingSafeEqual(
+        Buffer.from(expected, 'hex'),
+        Buffer.from(received, 'hex'),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  findRepositoryWebhookByUrl(
+    hooks: GithubWebhook[],
+    webhookUrl: string,
+  ): GithubWebhook | undefined {
+    const normalizedUrl = this.normalizeWebhookUrl(webhookUrl);
+    return hooks.find(
+      (hook) =>
+        this.normalizeWebhookUrl(hook.config?.url ?? '') === normalizedUrl,
+    );
+  }
+
+  async ensurePushWebhook(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    webhookUrl: string,
+    existingHookId?: number,
+  ) {
+    const normalizedUrl = this.normalizeWebhookUrl(webhookUrl);
+    const secret = this.config.getOrThrow<string>('GITHUB_WEBHOOK_SECRET');
+    const hooks = await this.listRepositoryWebhooks(user, owner, repo);
+    const matchedHook = this.findRepositoryWebhookByUrl(hooks, normalizedUrl);
+
+    if (matchedHook) {
+      return {
+        hook: matchedHook,
+        webhookUrl: normalizedUrl,
+        created: false,
+      };
+    }
+
+    if (existingHookId) {
+      try {
+        await this.deleteRepositoryWebhook(user, owner, repo, existingHookId);
+      } catch {
+        // Previous hook may have been removed manually on GitHub.
+      }
+    }
+
+    const hook = await this.createRepositoryWebhook(
+      user,
+      owner,
+      repo,
+      normalizedUrl,
+      secret,
+    );
+
+    return {
+      hook,
+      webhookUrl: normalizedUrl,
+      created: true,
+    };
+  }
+
+  extractChangedPathsFromPushPayload(payload: GithubPushWebhookPayload): {
+    changed: string[];
+    removed: string[];
+  } {
+    const changed = new Set<string>();
+    const removed = new Set<string>();
+
+    for (const commit of payload.commits ?? []) {
+      for (const path of commit.added ?? []) {
+        changed.add(path);
+      }
+      for (const path of commit.modified ?? []) {
+        changed.add(path);
+      }
+      for (const path of commit.removed ?? []) {
+        removed.add(path);
+        changed.delete(path);
+      }
+    }
+
+    return {
+      changed: Array.from(changed),
+      removed: Array.from(removed),
+    };
   }
 
   // --- Internals ---
@@ -243,7 +470,7 @@ export class GithubService {
     const query = search.toString() ? `?${search.toString()}` : '';
     const suffix =
       normalized.length > 0
-        ? `/contents/${encodeURIComponent(normalized)}`
+        ? `/contents/${normalized.split('/').map(encodeURIComponent).join('/')}`
         : '/contents';
     return `/repos/${owner}/${repo}${suffix}${query}`;
   }
@@ -317,12 +544,21 @@ export class GithubService {
     return this.tokenEncryptionService.decrypt(encryptedToken);
   }
 
-  private async githubRequest(
+  private async githubRequest<T>(
     userId: string,
     path: string,
     init?: RequestInit & { accept?: string },
     parseJson = true,
-  ) {
+  ): Promise<T> {
+    return this.githubRequestForUserId<T>(userId, path, init, parseJson);
+  }
+
+  private async githubRequestForUserId<T>(
+    userId: string,
+    path: string,
+    init?: RequestInit & { accept?: string },
+    parseJson = true,
+  ): Promise<T> {
     const token = await this.getDecryptedAccessToken(userId);
     return this.rawGithubRequest(path, token, init, parseJson);
   }
@@ -340,7 +576,7 @@ export class GithubService {
         Authorization: `Bearer ${accessToken}`,
         'User-Agent': 'pre-cision-backend',
         'X-GitHub-Api-Version': '2022-11-28',
-        ...(init?.method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         ...init?.headers,
       },
     });

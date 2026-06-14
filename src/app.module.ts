@@ -8,6 +8,7 @@ import { envValidationSchema } from './config/env.validation.js';
 import { AuthModule } from './auth/auth.module.js';
 import { GithubModule } from './github/github.module.js';
 import { CodeReviewModule } from './code-review/code-review.module.js';
+import { RepoRagModule } from './repo-rag/repo-rag.module.js';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CodeReviewModule } from './code-review/code-review.module.js';
     }),
     AuthModule,
     GithubModule,
+    RepoRagModule,
     CodeReviewModule,
   ],
   controllers: [AppController],

@@ -1,4 +1,35 @@
-import type { DomainKey, DomainReport, Finding } from "../state.js";
+import type { DomainKey, DomainReport, Finding, GraphState } from '../state.js';
+
+const LOG_PREFIX = '[code-review]';
+
+export function buildFilesPromptSection(state: GraphState): string {
+  return (
+    state.cleanedInput?.files
+      ?.map((file) => {
+        const patch = file.patch?.trim();
+        const body = patch
+          ? `PATCH:\n${file.patch}\n\nBASE (old):\n${file.baseContent}\n\nHEAD (new):\n${file.content}`
+          : `HEAD (new):\n${file.content}`;
+        return `\nFILE: ${file.filename}\n\n${body}\n`;
+      })
+      .join('\n------------------\n') ?? ''
+  );
+}
+
+export function buildRelatedContextBlock(state: GraphState): string {
+  const formatted = state.relatedContextFormatted?.trim();
+  if (!formatted) {
+    return '';
+  }
+
+  return `\n${formatted}\n\nUse related context to detect cross-file breakage, duplicate utilities, missing tests, and architectural impact. Do not repeat findings about code already shown in FILES.\n`;
+}
+
+export function logDomainComplete(domain: DomainKey, report: DomainReport): void {
+  console.log(
+    `${LOG_PREFIX} ${domain} review complete: rating=${report.rating} findings=${report.findings.length}`,
+  );
+}
 
 export function extractModelTextContent(response: any): string {
   return typeof response?.content === "string"

@@ -1,70 +1,94 @@
-import type { DomainReport, GraphState } from "../state.js";
-import { createGemini } from "../gemini.factory.js";
+import type { DomainReport, GraphState } from '../state.js';
+import { createGemini } from '../gemini.factory.js';
 import {
   buildDomainReport,
+  buildFilesPromptSection,
+  buildRelatedContextBlock,
   extractModelTextContent,
+  logDomainComplete,
   parseStrictJson,
-} from "./domain-review.util.js";
+} from './domain-review.util.js';
+
+const LOG_PREFIX = '[code-review]';
 
 /**
- * BugDetection node.\n+ * Runs after domain nodes; prompt is dynamically strengthened using `bugDetectionPromptAddendum`.
+ * Bug detection pass — runs after parallel domain reviews and joinNode shaping.
  */
-export const reviewerNode = async (
+export const bugDetectionReviewerNode = async (
   state: GraphState,
 ): Promise<Partial<GraphState>> => {
   const quality = state.domainReports?.quality;
   const security = state.domainReports?.security;
   const performance = state.domainReports?.performance;
 
-  // Barrier safety: if domain reviews haven't completed yet, skip LLM call.
   if (!quality || !security || !performance) {
     return {};
   }
 
+  console.log(`${LOG_PREFIX} bugDetection node: invoking LLM for PR #${state.input.prId}`);
+
   const model = createGemini();
-
-  const filesText =
-    state.cleanedInput?.files
-      ?.map(
-        (f) => `
-FILE: ${f.filename}
-
-PATCH:
-${f.patch || ""}
-
-CONTENT:
-${f.content || ""}
-`,
-      )
-      .join("\n------------------\n") ?? "";
-
+  const filesText = buildFilesPromptSection(state);
+  const relatedContext = buildRelatedContextBlock(state);
   const addendum = state.bugDetectionPromptAddendum?.trim();
 
   const prompt = `
-You are a senior software engineer doing BUG DETECTION in a PR review.\n+\n+Goal: find correctness bugs, edge-case failures, hidden regressions, and logic mistakes.\n+\n+${addendum ? `EXTRA FOCUS (derived from other domain reviews):\n${addendum}\n` : ""}
-\n+Analyze the following changes and return STRICT JSON only (no markdown/backticks/explanations).\n+\n+PR TITLE:\n+${state.cleanedInput?.title ?? ""}\n+\n+PR DESCRIPTION:\n+${state.cleanedInput?.description ?? ""}\n+\n+FILES:\n+${filesText}\n+\n+Return ONLY this JSON structure:\n+{\n+  \"rating\": 1,\n+  \"summary\": \"string\",\n+  \"weakAreas\": [\"string\"],\n+  \"findings\": [\n+    {\n+      \"file\": \"string\",\n+      \"issue\": \"string\",\n+      \"severity\": \"low | medium | high\",\n+      \"suggestion\": \"string\"\n+    }\n+  ]\n+}\n+`;
+You are a senior software engineer doing BUG DETECTION in a PR review.
+
+Goal: find correctness bugs, edge-case failures, hidden regressions, and logic mistakes.
+
+${addendum ? `EXTRA FOCUS (derived from other domain reviews):\n${addendum}\n` : ''}
+Analyze the following changes and return STRICT JSON only (no markdown/backticks/explanations).
+
+PR TITLE:
+${state.cleanedInput?.title ?? ''}
+
+PR DESCRIPTION:
+${state.cleanedInput?.description ?? ''}
+
+FILES:
+${filesText}
+${relatedContext}
+Return ONLY this JSON structure:
+{
+  "rating": 1,
+  "summary": "string",
+  "weakAreas": ["string"],
+  "findings": [
+    {
+      "file": "string",
+      "issue": "string",
+      "severity": "low | medium | high",
+      "suggestion": "string"
+    }
+  ]
+}
+`;
 
   const response = await model.invoke(prompt);
   const raw = extractModelTextContent(response);
   const parsed = parseStrictJson(raw, {
     rating: 3,
-    summary: "Bug detection review completed.",
+    summary: 'Bug detection review completed.',
     weakAreas: [],
     findings: [],
   });
 
   const report: DomainReport = buildDomainReport({
-    domain: "bugDetection",
+    domain: 'bugDetection',
     parsed,
-    fallbackSummary: "Bug detection review completed.",
+    fallbackSummary: 'Bug detection review completed.',
   });
 
+  logDomainComplete('bugDetection', report);
+
   return {
-    // backward compatible: keep populating `findings` with bug-detection findings only
     findings: report.findings,
     domainReports: {
-      ...(state.domainReports ?? {}),
       bugDetection: report,
     },
   };
 };
+
+/** @deprecated Use bugDetectionReviewerNode */
+export const reviewerNode = bugDetectionReviewerNode;
