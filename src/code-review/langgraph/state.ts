@@ -35,7 +35,18 @@ export interface Finding {
   suggestion?: string;
 }
 
-export type DomainKey = "quality" | "security" | "performance" | "bugDetection";
+export type DomainKey = 'quality' | 'security' | 'performance' | 'bugDetection';
+
+export const PARALLEL_DOMAIN_KEYS: DomainKey[] = [
+  'quality',
+  'security',
+  'performance',
+];
+
+export const DOMAIN_KEYS: DomainKey[] = [
+  ...PARALLEL_DOMAIN_KEYS,
+  'bugDetection',
+];
 
 export type DomainReport = {
   domain: DomainKey;
@@ -51,6 +62,11 @@ export const GraphAnnotation = Annotation.Root({
   relatedContext: Annotation<RetrievedChunk[] | undefined>(),
   relatedContextFormatted: Annotation<string | undefined>(),
   findings: Annotation<Finding[] | undefined>(),
+  domainReports: Annotation<Partial<Record<DomainKey, DomainReport>>>({
+    reducer: (left, right) => ({ ...left, ...right }),
+    default: () => ({}),
+  }),
+  bugDetectionPromptAddendum: Annotation<string | undefined>(),
   finalReport: Annotation<Record<string, unknown> | undefined>(),
 });
 

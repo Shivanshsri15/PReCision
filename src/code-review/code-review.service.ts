@@ -46,21 +46,32 @@ export class CcodeReviewService {
     });
 
     try {
-      console.log(`${LOG_PREFIX} graph invoke started: runId=${run._id}`);
+      console.log(
+        `${LOG_PREFIX} graph invoke started: runId=${run._id} ` +
+          `pipeline=inputGuard→retriever→[quality|security|performance]→join→bugDetection→assembler`,
+      );
       const graph = buildGraph(this.retrieverService);
       const result = await graph.invoke({ input: payload });
       const finalReport = result.finalReport ?? {
         prId: payload.prId,
+        overallSummary: 'Review completed.',
         findings: [],
+        allFindings: [],
+        domainReports: {},
       };
 
-      const findingsCount = Array.isArray(finalReport.findings)
-        ? finalReport.findings.length
-        : 0;
+      const allFindingsCount = Array.isArray(finalReport.allFindings)
+        ? finalReport.allFindings.length
+        : Array.isArray(finalReport.findings)
+          ? finalReport.findings.length
+          : 0;
+      const relatedContextCount =
+        typeof finalReport.relatedContextCount === 'number'
+          ? finalReport.relatedContextCount
+          : (result.relatedContext?.length ?? 0);
       console.log(
         `${LOG_PREFIX} graph complete: runId=${run._id} ` +
-          `findings=${findingsCount} ` +
-          `relatedContext=${typeof finalReport.relatedContextCount === 'number' ? finalReport.relatedContextCount : 0}`,
+          `findings=${allFindingsCount} relatedContext=${relatedContextCount}`,
       );
 
       await this.codeReviewRunModel.findByIdAndUpdate(run._id, {
