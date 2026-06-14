@@ -1,23 +1,37 @@
-import { Annotation } from "@langchain/langgraph";
+import { Annotation } from '@langchain/langgraph';
 
 export interface PRFile {
   filename: string;
-  patch?: string;
-  content?: string;
+  patch: string;
+  content: string;
+  baseContent: string;
 }
 
 export interface PRAnalysisPayload {
   prId: number;
   title: string;
   description?: string;
+  owner: string;
+  repo: string;
+  baseBranch: string;
+  baseSha: string;
+  headSha: string;
   files: PRFile[];
   extraPrompt?: string;
+}
+
+export interface RetrievedChunk {
+  path: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+  source: string;
 }
 
 export interface Finding {
   file: string;
   issue: string;
-  severity: "low" | "medium" | "high";
+  severity: 'low' | 'medium' | 'high';
   suggestion?: string;
 }
 
@@ -34,17 +48,10 @@ export type DomainReport = {
 export const GraphAnnotation = Annotation.Root({
   input: Annotation<PRAnalysisPayload>(),
   cleanedInput: Annotation<PRAnalysisPayload | undefined>(),
-  /**
-   * Backward-compatible bucket (older pipeline). New pipeline should use domainReports.
-   */
+  relatedContext: Annotation<RetrievedChunk[] | undefined>(),
+  relatedContextFormatted: Annotation<string | undefined>(),
   findings: Annotation<Finding[] | undefined>(),
-
-  domainReports: Annotation<Partial<Record<DomainKey, DomainReport>>>({
-    reducer: (left, right) => ({ ...(left ?? {}), ...(right ?? {}) }),
-    default: () => ({}),
-  }),
-  bugDetectionPromptAddendum: Annotation<string | undefined>(),
-  finalReport: Annotation<any | undefined>(),
+  finalReport: Annotation<Record<string, unknown> | undefined>(),
 });
 
 export type GraphState = typeof GraphAnnotation.State;

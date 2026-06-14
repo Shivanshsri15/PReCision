@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
+import { RepoRagModule } from '../repo-rag/repo-rag.module.js';
 import { GithubController } from './github.controller.js';
 import { GithubService } from './github.service.js';
 
@@ -8,7 +9,7 @@ import { GithubService } from './github.service.js';
  * Depends on AuthModule for JWT (OAuth state), user persistence, and token encryption.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, forwardRef(() => RepoRagModule)],
   controllers: [GithubController],
   providers: [GithubService],
   exports: [GithubService],

@@ -3,14 +3,22 @@ import {
   Controller,
   DefaultValuePipe,
   Get,
+  Headers,
+  HttpCode,
   Param,
   ParseIntPipe,
+  Post,
   Query,
+  Req,
   Request,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import type { RawBodyRequest } from '@nestjs/common';
+import type { Request as ExpressRequest } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
+import { IndexingService } from '../repo-rag/indexing/indexing.service.js';
 import { GithubOauthCallbackDto } from './dto/github-oauth-callback.dto.js';
 import { GithubService } from './github.service.js';
 
@@ -20,7 +28,10 @@ import { GithubService } from './github.service.js';
  */
 @Controller('/api/v1/github')
 export class GithubController {
-  constructor(private readonly githubService: GithubService) {}
+  constructor(
+    private readonly githubService: GithubService,
+    private readonly indexingService: IndexingService,
+  ) {}
 
   // --- OAuth (typically unauthenticated or callback from GitHub) ---
 
@@ -165,5 +176,30 @@ export class GithubController {
     @Query('head') head: string,
   ) {
     return this.githubService.getDiff(req.user, owner, repo, base, head);
+  }
+
+  @Post('/webhook')
+  @HttpCode(200)
+  async handleWebhook(
+    @Req() req: RawBodyRequest<ExpressRequest>,
+    @Headers('x-hub-signature-256') signature?: string,
+    @Headers('x-github-event') event?: string,
+  ) {
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      throw new UnauthorizedException('Missing raw request body');
+    }
+
+    if (!this.githubService.verifyWebhookSignature(rawBody, signature)) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
+    if (event !== 'push') {
+      return { ok: true, ignored: true, event };
+    }
+
+    const payload = JSON.parse(rawBody.toString('utf8'));
+    const result = await this.indexingService.handlePushWebhook(payload);
+    return { ok: true, ...result };
   }
 }

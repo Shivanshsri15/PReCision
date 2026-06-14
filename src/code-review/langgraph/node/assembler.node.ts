@@ -1,46 +1,52 @@
-import type { DomainKey, DomainReport, Finding, GraphState } from "../state.js";
+import {
+  DOMAIN_KEYS,
+  type DomainKey,
+  type DomainReport,
+  type Finding,
+  type GraphState,
+} from '../state.js';
+
+const LOG_PREFIX = '[code-review]';
 
 export const assemblerNode = async (state: GraphState): Promise<Partial<GraphState>> => {
   const domainReports = state.domainReports ?? {};
-
-  const domains: DomainKey[] = ["quality", "security", "performance", "bugDetection"];
   const reports: Partial<Record<DomainKey, DomainReport>> = {};
 
-  for (const d of domains) {
-    const r = domainReports[d];
-    if (r) {
-      reports[d] = r;
+  for (const domain of DOMAIN_KEYS) {
+    const report = domainReports[domain];
+    if (report) {
+      reports[domain] = report;
     }
   }
 
   const allFindings: Finding[] = [];
-  for (const d of domains) {
-    const r = reports[d];
-    if (r?.findings?.length) {
-      allFindings.push(...r.findings);
+  for (const domain of DOMAIN_KEYS) {
+    const report = reports[domain];
+    if (report?.findings?.length) {
+      allFindings.push(...report.findings);
     }
   }
 
   const dedupedMap = new Map<string, Finding>();
-  for (const f of allFindings) {
-    const key = `${f.file}::${f.issue}`;
+  for (const finding of allFindings) {
+    const key = `${finding.file}::${finding.issue}`;
     if (!dedupedMap.has(key)) {
-      dedupedMap.set(key, f);
+      dedupedMap.set(key, finding);
     }
   }
   const dedupedFindings = Array.from(dedupedMap.values());
 
   const severityCounts = dedupedFindings.reduce(
-    (acc, f) => {
-      acc[f.severity] += 1;
+    (acc, finding) => {
+      acc[finding.severity] += 1;
       return acc;
     },
-    { low: 0, medium: 0, high: 0 } as Record<"low" | "medium" | "high", number>,
+    { low: 0, medium: 0, high: 0 } as Record<'low' | 'medium' | 'high', number>,
   );
 
-  const domainCounts = domains.reduce(
-    (acc, d) => {
-      acc[d] = reports[d]?.findings?.length ?? 0;
+  const domainCounts = DOMAIN_KEYS.reduce(
+    (acc, domain) => {
+      acc[domain] = reports[domain]?.findings?.length ?? 0;
       return acc;
     },
     {} as Record<DomainKey, number>,
@@ -50,18 +56,31 @@ export const assemblerNode = async (state: GraphState): Promise<Partial<GraphSta
     `Found ${dedupedFindings.length} issues ` +
     `(high: ${severityCounts.high}, medium: ${severityCounts.medium}, low: ${severityCounts.low}).`;
 
+  console.log(
+    `${LOG_PREFIX} assembler node: PR #${state.input.prId} ` +
+      `findings=${dedupedFindings.length} domains=${JSON.stringify(domainCounts)}`,
+  );
+
+  const relatedContextCount = state.relatedContext?.length ?? 0;
+  const relatedContextPaths =
+    state.relatedContext?.slice(0, 12).map((chunk) => chunk.path) ?? [];
+
   return {
     finalReport: {
       prId: state.input.prId,
       overallSummary,
+      summary: overallSummary,
       domainReports: reports,
       allFindings: dedupedFindings,
+      findings: dedupedFindings,
       counts: {
         severity: severityCounts,
         domain: domainCounts,
       },
-      extraPromptApplied: state.input.extraPrompt ?? "",
-      bugDetectionPromptAddendum: state.bugDetectionPromptAddendum ?? "",
+      extraPromptApplied: state.input.extraPrompt ?? '',
+      bugDetectionPromptAddendum: state.bugDetectionPromptAddendum ?? '',
+      relatedContextCount,
+      relatedContextPaths,
     },
   };
 };
