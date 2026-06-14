@@ -60,7 +60,6 @@ You are a senior software engineer doing BUG DETECTION in a PR review.\n+\n+Goal
   });
 
   return {
-    // backward compatible: keep populating `findings` with bug-detection findings only
     findings: report.findings,
     domainReports: {
       ...(state.domainReports ?? {}),
