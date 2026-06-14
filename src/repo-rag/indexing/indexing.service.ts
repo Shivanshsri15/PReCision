@@ -60,6 +60,15 @@ export class IndexingService {
     repo: string,
     branch: string,
   ) {
+    return this.runFullIndexForUserId(user.userId, owner, repo, branch);
+  }
+
+  async runFullIndexForUserId(
+    userId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ) {
     const repoId = `${owner}/${repo}`;
     const maxFiles = this.config.get<number>('INDEX_MAX_FILES') ?? 1000;
 
@@ -71,7 +80,7 @@ export class IndexingService {
         branch,
         repoId,
         status: 'indexing',
-        indexedByUserId: user.userId,
+        indexedByUserId: userId,
         lastError: undefined,
       },
       { upsert: true, new: true },
@@ -82,16 +91,16 @@ export class IndexingService {
         `${LOG_PREFIX} full index started: ${repoId}@${branch} (maxFiles=${maxFiles})`,
       );
 
-      const headSha = await this.githubService.resolveBranchHead(
-        user,
+      const headSha = await this.githubService.resolveBranchHeadForUserId(
+        userId,
         owner,
         repo,
         branch,
       );
       console.log(`${LOG_PREFIX} resolved head SHA: ${headSha}`);
 
-      const tree = await this.githubService.getTree(
-        user,
+      const tree = await this.githubService.getTreeForUserId(
+        userId,
         owner,
         repo,
         headSha,
@@ -136,8 +145,8 @@ export class IndexingService {
             const path = entry.path!;
             const blobSha = entry.sha!;
             try {
-              const filePayload = (await this.githubService.getRepositoryFile(
-                user,
+              const filePayload = (await this.githubService.getRepositoryFileForUserId(
+                userId,
                 owner,
                 repo,
                 path,
@@ -431,8 +440,44 @@ export class IndexingService {
 
     const branch = ref.replace('refs/heads/', '');
     const record = await this.repoIndexModel.findOne({ owner, repo, branch });
+
     if (!record) {
-      return { handled: false, reason: 'not-indexed' };
+      // Branch isn't indexed yet. Auto-enroll it, but only if it's an allowed
+      // review branch AND the repo was already connected by some user — the
+      // webhook itself carries no identity, so we reuse that user's token.
+      if (!this.isAllowedReviewBranch(branch)) {
+        console.log(
+          `${LOG_PREFIX} webhook push ignored (branch not in allowlist): ${owner}/${repo}@${branch}`,
+        );
+        return { handled: false, reason: 'branch-not-allowed' };
+      }
+
+      const repoRecord = await this.repoIndexModel.findOne({ owner, repo });
+      if (!repoRecord) {
+        console.log(
+          `${LOG_PREFIX} webhook push ignored (repo not connected): ${owner}/${repo}@${branch}`,
+        );
+        return { handled: false, reason: 'repo-not-connected' };
+      }
+
+      console.log(
+        `${LOG_PREFIX} webhook push: auto-indexing new branch ${owner}/${repo}@${branch}`,
+      );
+      // A full index can't be built from a push payload (it lists only changed
+      // files) and is slow — fire-and-forget so the webhook returns 200 fast.
+      void this.runFullIndexForUserId(
+        repoRecord.indexedByUserId,
+        owner,
+        repo,
+        branch,
+      ).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(
+          `${LOG_PREFIX} auto-index failed: ${owner}/${repo}@${branch} — ${message}`,
+        );
+      });
+
+      return { handled: true, action: 'full-index-started', branch };
     }
 
     const { changed, removed } =
@@ -458,5 +503,15 @@ export class IndexingService {
       changed: changed.length,
       removed: removed.length,
     };
+  }
+
+  private isAllowedReviewBranch(branch: string): boolean {
+    const configured =
+      this.config.get<string>('ALLOWED_REVIEW_BRANCHES') ?? 'main,master';
+    const allowed = configured
+      .split(',')
+      .map((b) => b.trim())
+      .filter(Boolean);
+    return allowed.includes(branch);
   }
 }

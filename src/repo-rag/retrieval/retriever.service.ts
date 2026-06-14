@@ -5,7 +5,6 @@ import type { PRFile } from '../../code-review/langgraph/state.js';
 import { chunkFile } from '../chunking/chunk-file.js';
 import {
   extractImportPaths,
-  extractSymbols,
   resolveImportCandidates,
 } from '../chunking/symbol-extractor.js';
 import { shouldIndex } from '../chunking/should-index.js';
@@ -26,6 +25,8 @@ import {
   isTestOrSpecPath,
   mergeByFixedPriority,
 } from './context-assembler.js';
+
+const LOG_PREFIX = '[code-review]';
 
 export interface RetrievalInput {
   owner: string;
@@ -61,101 +62,85 @@ export class RetrieverService {
   }> {
     const { owner, repo, baseBranch, files } = input;
     const repoId = `${owner}/${repo}`;
+    console.log(
+      `${LOG_PREFIX} retrieval started: ${repoId}@${baseBranch} files=${files.length}`,
+    );
 
     let indexRecord: RepoIndexDocument;
     try {
       indexRecord = await this.ensureIndexed(owner, repo, baseBranch);
     } catch {
+      console.log(
+        `${LOG_PREFIX} retrieval skipped: ${repoId}@${baseBranch} not indexed`,
+      );
       return { chunks: [], formatted: '' };
     }
 
     if (indexRecord.status !== 'ready') {
+      console.log(
+        `${LOG_PREFIX} retrieval skipped: ${repoId}@${baseBranch} status=${indexRecord.status}`,
+      );
       return { chunks: [], formatted: '' };
     }
 
     const changedFiles = files.map((file) => normalizePath(file.filename));
     const changedSet = new Set(changedFiles);
 
-    const headContent = files.map((file) => file.content).join('\n\n');
+    // V1: embed the PATCH only. The HEAD and symbol-name query inputs were
+    // dropped — they're largely redundant with the patch, and embedding the big
+    // concatenated file content was the slow part of retrieval.
     const patchContent = files.map((file) => file.patch).join('\n\n');
-    const symbols = files.flatMap((file) =>
-      extractSymbols(file.filename, file.content || file.patch),
-    );
-    const uniqueSymbols = Array.from(new Set(symbols));
 
-    const importGraph = await this.retrieveImportGraph(
-      repoId,
-      baseBranch,
-      files,
-      changedSet,
-    );
-    const pathTestResults = await this.retrievePathTests(
-      repoId,
-      baseBranch,
-      files,
-      changedSet,
-    );
-    const pathSiblingResults = await this.retrievePathSiblings(
-      repoId,
-      baseBranch,
-      files,
-      changedSet,
-    );
+    const [importGraph, pathTestResults, pathSiblingResults] = await Promise.all([
+      this.retrieveImportGraph(repoId, baseBranch, files, changedSet),
+      this.retrievePathTests(repoId, baseBranch, files, changedSet),
+      this.retrievePathSiblings(repoId, baseBranch, files, changedSet),
+    ]);
 
-    const symbolResults =
-      uniqueSymbols.length > 0
-        ? await this.vectorStore.query(
-            await this.embeddingsService.embedQuery(uniqueSymbols.join('\n')),
-            repoId,
-            baseBranch,
-            8,
-            changedFiles,
-          )
-        : [];
+    const semanticQueryText = patchContent.trim().slice(0, 6000);
 
-    const semanticHead =
-      headContent.trim().length > 0
-        ? await this.vectorStore.query(
-            await this.embeddingsService.embedQuery(headContent),
-            repoId,
-            baseBranch,
-            8,
-            changedFiles,
-          )
-        : [];
-
-    const semanticPatch =
-      patchContent.trim().length > 0
-        ? await this.vectorStore.query(
-            await this.embeddingsService.embedQuery(patchContent),
-            repoId,
-            baseBranch,
-            8,
-            changedFiles,
-          )
-        : [];
-
-    symbolResults.forEach((chunk) => {
-      chunk.source = 'symbol-query';
-    });
-    semanticHead.forEach((chunk) => {
-      chunk.source = 'semantic-head';
-    });
-    semanticPatch.forEach((chunk) => {
-      chunk.source = 'semantic-patch';
-    });
+    let semanticResults: RetrievedChunk[] = [];
+    if (semanticQueryText.trim().length > 0) {
+      try {
+        const embedding = await this.embeddingsService.embedQuery(semanticQueryText);
+        semanticResults = await this.vectorStore.query(
+          embedding,
+          repoId,
+          baseBranch,
+          12,
+          changedFiles,
+        );
+        semanticResults.forEach((chunk) => {
+          chunk.source = 'semantic-query';
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `${LOG_PREFIX} semantic vector search skipped — ${message}`,
+        );
+      }
+    }
 
     const merged = mergeByFixedPriority(
       [
         importGraph,
         pathTestResults,
         pathSiblingResults,
-        symbolResults,
-        semanticHead,
-        semanticPatch,
+        semanticResults,
       ],
       changedFiles,
     );
+
+    console.log(
+      `${LOG_PREFIX} retrieval sources: import=${importGraph.length} tests=${pathTestResults.length} ` +
+        `siblings=${pathSiblingResults.length} semantic=${semanticResults.length} → merged=${merged.length}`,
+    );
+    if (merged.length > 0) {
+      console.log(
+        `${LOG_PREFIX} retrieval top paths:`,
+        merged.slice(0, 8).map((c) => `${c.path} (${c.source ?? 'unknown'})`),
+      );
+    }
 
     return {
       chunks: merged,

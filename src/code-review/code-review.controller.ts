@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Get,
   Param,
@@ -13,7 +12,8 @@ import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js
 import { GithubService } from '../github/github.service.js';
 import type { PRAnalysisPayload, PRFile } from './langgraph/state.js';
 import { CcodeReviewService } from './code-review.service.js';
-import { AnalyzePrDto } from './dto/analyze-pr.dto.js';
+
+const LOG_PREFIX = '[code-review]';
 
 async function fetchFileContent(
   githubService: GithubService,
@@ -52,9 +52,10 @@ export class CodeReviewController {
     @Param('owner') owner: string,
     @Param('repo') repo: string,
     @Param('pullNumber', ParseIntPipe) pullNumber: number,
-    @Body() body: AnalyzePrDto,
   ) {
-    const maxFiles = body.maxFiles ?? 5;
+    console.log(
+      `${LOG_PREFIX} analyze request: ${owner}/${repo} PR #${pullNumber}`,
+    );
 
     const pr = (await this.githubService.getPullRequest(
       req.user,
@@ -79,45 +80,59 @@ export class CodeReviewController {
     const headSha = pr?.head?.sha ?? '';
     const baseSha = pr?.base?.sha ?? '';
     const baseBranch = pr?.base?.ref ?? 'main';
+    console.log(
+      `${LOG_PREFIX} PR loaded: "${pr?.title ?? `PR #${pullNumber}`}" ` +
+        `base=${baseBranch}@${baseSha.slice(0, 7)} head=${headSha.slice(0, 7)} ` +
+        `prFiles=${prFiles.length}`,
+    );
 
-    const files: PRFile[] = [];
-    for (const file of prFiles.slice(0, maxFiles)) {
-      const filename = file?.filename;
-      if (!filename) {
-        continue;
-      }
+    const files: PRFile[] = await Promise.all(
+      prFiles.map(async (file) => {
+        const filename = file?.filename;
+        if (!filename) {
+          return null;
+        }
 
-      const patch =
-        typeof file?.patch === 'string' && file.patch.trim().length > 0
-          ? file.patch
-          : '';
+        const patch =
+          typeof file?.patch === 'string' && file.patch.trim().length > 0
+            ? file.patch
+            : '';
 
-      const content =
-        file.status === 'removed'
-          ? ''
-          : await fetchFileContent(
-              this.githubService,
-              req.user,
-              owner,
-              repo,
-              filename,
-              headSha,
-            );
+        const [content, baseContent] = await Promise.all([
+          file.status === 'removed'
+            ? Promise.resolve('')
+            : fetchFileContent(
+                this.githubService,
+                req.user,
+                owner,
+                repo,
+                filename,
+                headSha,
+              ),
+          file.status === 'added'
+            ? Promise.resolve('')
+            : fetchFileContent(
+                this.githubService,
+                req.user,
+                owner,
+                repo,
+                filename,
+                baseSha,
+              ),
+        ]);
 
-      const baseContent =
-        file.status === 'added'
-          ? ''
-          : await fetchFileContent(
-              this.githubService,
-              req.user,
-              owner,
-              repo,
-              filename,
-              baseSha,
-            );
+        console.log(
+          `${LOG_PREFIX} file prepared: ${filename} ` +
+            `patch=${patch.length} chars head=${content.length} chars base=${baseContent.length} chars`,
+        );
 
-      files.push({ filename, patch, content, baseContent });
-    }
+        return { filename, patch, content, baseContent } satisfies PRFile;
+      }),
+    ).then((results) => results.filter((file): file is PRFile => file !== null));
+
+    console.log(
+      `${LOG_PREFIX} payload ready: ${files.length} files for analysis`,
+    );
 
     const payload: PRAnalysisPayload = {
       prId: pr?.number ?? pullNumber,

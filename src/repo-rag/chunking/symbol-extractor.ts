@@ -4,11 +4,35 @@ import { isTypeScriptOrJavaScript } from './language-map.js';
 const REGEX_SYMBOL_PATTERNS = [
   /(?:export\s+)?(?:async\s+)?function\s+(\w+)/g,
   /class\s+(\w+)/g,
-  /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=/g,
-  /(?:public|private|protected)\s+(?:async\s+)?(\w+)\s*\(/g,
+  /(?:export\s+)?(?:const|let|var)\s+([A-Z]\w+)\s*=/g,
 ];
 
-export function extractSymbols(path: string, content: string, max = 20): string[] {
+function isModuleLevel(node: ts.Node): boolean {
+  const parent = node.parent;
+  if (ts.isSourceFile(parent)) {
+    return true;
+  }
+  return ts.isModuleBlock(parent) && ts.isModuleDeclaration(parent.parent);
+}
+
+function hasExportModifier(node: ts.Node): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    !!node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+  );
+}
+
+function isUsefulSymbol(name: string): boolean {
+  if (name.length < 3) {
+    return false;
+  }
+  if (/^[A-Z]/.test(name)) {
+    return true;
+  }
+  return /^[a-z]+[A-Z]/.test(name) && name.length >= 5;
+}
+
+export function extractSymbols(path: string, content: string, max = 12): string[] {
   const symbols = new Set<string>();
 
   if (isTypeScriptOrJavaScript(path)) {
@@ -31,19 +55,28 @@ export function extractSymbols(path: string, content: string, max = 20): string[
       const visit = (node: ts.Node) => {
         if (
           (ts.isFunctionDeclaration(node) ||
-            ts.isMethodDeclaration(node) ||
             ts.isClassDeclaration(node) ||
             ts.isInterfaceDeclaration(node) ||
             ts.isEnumDeclaration(node)) &&
           node.name &&
-          ts.isIdentifier(node.name)
+          ts.isIdentifier(node.name) &&
+          (isModuleLevel(node) || hasExportModifier(node))
         ) {
           symbols.add(node.name.text);
         }
 
-        if (ts.isVariableStatement(node)) {
+        if (
+          ts.isMethodDeclaration(node) &&
+          node.name &&
+          ts.isIdentifier(node.name) &&
+          hasExportModifier(node.parent)
+        ) {
+          symbols.add(node.name.text);
+        }
+
+        if (ts.isVariableStatement(node) && hasExportModifier(node)) {
           for (const decl of node.declarationList.declarations) {
-            if (ts.isIdentifier(decl.name)) {
+            if (ts.isIdentifier(decl.name) && /^[A-Z]/.test(decl.name.text)) {
               symbols.add(decl.name.text);
             }
           }
@@ -58,12 +91,12 @@ export function extractSymbols(path: string, content: string, max = 20): string[
     }
   }
 
-  if (symbols.size < max) {
+  if (symbols.size < max && !isTypeScriptOrJavaScript(path)) {
     for (const pattern of REGEX_SYMBOL_PATTERNS) {
       pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(content)) !== null) {
-        if (match[1]) {
+        if (match[1] && isUsefulSymbol(match[1])) {
           symbols.add(match[1]);
         }
         if (symbols.size >= max) {
@@ -73,7 +106,7 @@ export function extractSymbols(path: string, content: string, max = 20): string[
     }
   }
 
-  return Array.from(symbols).slice(0, max);
+  return Array.from(symbols).filter(isUsefulSymbol).slice(0, max);
 }
 
 const IMPORT_PATTERN =

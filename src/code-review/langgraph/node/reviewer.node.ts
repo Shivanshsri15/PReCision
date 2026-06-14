@@ -1,24 +1,26 @@
 import { GraphState } from '../state.js';
 import { createGemini } from '../gemini.factory.js';
 
+const LOG_PREFIX = '[code-review]';
+
 export const reviewerNode = async (state: GraphState): Promise<Partial<GraphState>> => {
+  const fileCount = state.cleanedInput?.files.length ?? 0;
+  const contextChars = state.relatedContextFormatted?.length ?? 0;
+  console.log(
+    `${LOG_PREFIX} reviewer node: invoking LLM for PR #${state.input.prId} ` +
+      `files=${fileCount} relatedContext=${contextChars} chars`,
+  );
+
   const model = createGemini();
 
   const filesText = state.cleanedInput?.files
-    .map(
-      (file) => `
-FILE: ${file.filename}
-
-PATCH:
-${file.patch}
-
-BASE (old):
-${file.baseContent}
-
-HEAD (new):
-${file.content}
-`,
-    )
+    .map((file) => {
+      const patch = file.patch?.trim();
+      const body = patch
+        ? `PATCH:\n${file.patch}`
+        : `HEAD (new):\n${file.content}`;
+      return `\nFILE: ${file.filename}\n\n${body}\n`;
+    })
     .join('\n------------------\n');
 
   const relatedContext = state.relatedContextFormatted?.trim()
@@ -68,8 +70,11 @@ Return ONLY this JSON structure with no markdown, no backticks, no explanation:
   let parsed: { findings?: GraphState['findings'] };
   try {
     parsed = JSON.parse(cleaned);
+    console.log(
+      `${LOG_PREFIX} reviewer node complete: ${parsed.findings?.length ?? 0} findings`,
+    );
   } catch {
-    console.error('Failed to parse LLM response:', cleaned);
+    console.error(`${LOG_PREFIX} failed to parse LLM response:`, cleaned);
     parsed = { findings: [] };
   }
 

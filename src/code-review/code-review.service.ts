@@ -9,6 +9,8 @@ import {
 import { buildGraph } from './langgraph/graph.js';
 import { PRAnalysisPayload } from './langgraph/state.js';
 
+const LOG_PREFIX = '[code-review]';
+
 @Injectable()
 export class CcodeReviewService {
   constructor(
@@ -18,11 +20,19 @@ export class CcodeReviewService {
   ) {}
 
   async analyzePR(userId: string, payload: PRAnalysisPayload) {
+    const repoId = `${payload.owner}/${payload.repo}`;
+    console.log(
+      `${LOG_PREFIX} analyze started: ${repoId} PR #${payload.prId} ` +
+        `base=${payload.baseBranch}@${payload.baseSha.slice(0, 7)} ` +
+        `head=${payload.headSha.slice(0, 7)} files=${payload.files.length}`,
+    );
+
     await this.retrieverService.ensureIndexed(
       payload.owner,
       payload.repo,
       payload.baseBranch,
     );
+    console.log(`${LOG_PREFIX} index verified for ${repoId}@${payload.baseBranch}`);
 
     const run = await this.codeReviewRunModel.create({
       userId: new Types.ObjectId(userId),
@@ -36,12 +46,22 @@ export class CcodeReviewService {
     });
 
     try {
+      console.log(`${LOG_PREFIX} graph invoke started: runId=${run._id}`);
       const graph = buildGraph(this.retrieverService);
       const result = await graph.invoke({ input: payload });
       const finalReport = result.finalReport ?? {
         prId: payload.prId,
         findings: [],
       };
+
+      const findingsCount = Array.isArray(finalReport.findings)
+        ? finalReport.findings.length
+        : 0;
+      console.log(
+        `${LOG_PREFIX} graph complete: runId=${run._id} ` +
+          `findings=${findingsCount} ` +
+          `relatedContext=${typeof finalReport.relatedContextCount === 'number' ? finalReport.relatedContextCount : 0}`,
+      );
 
       await this.codeReviewRunModel.findByIdAndUpdate(run._id, {
         status: 'completed',
@@ -54,6 +74,9 @@ export class CcodeReviewService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed';
+      console.error(
+        `${LOG_PREFIX} analyze failed: ${repoId} PR #${payload.prId} runId=${run._id} — ${message}`,
+      );
       await this.codeReviewRunModel.findByIdAndUpdate(run._id, {
         status: 'failed',
         error: message,

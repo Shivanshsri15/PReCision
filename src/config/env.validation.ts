@@ -27,5 +27,6 @@ export const envValidationSchema = Joi.object({
   VECTOR_INDEX_NAME: Joi.string().default('repo_vectors_index'),
   GITHUB_WEBHOOK_SECRET: Joi.string().required(),
   INDEX_MAX_FILES: Joi.number().integer().min(1).default(1000),
+  ALLOWED_REVIEW_BRANCHES: Joi.string().default('main,master'),
 }).unknown(true);
 
