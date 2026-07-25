@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { GithubModule } from './github/github.module.js';
 import { CodeReviewModule } from './code-review/code-review.module.js';
 import { RepoRagModule } from './repo-rag/repo-rag.module.js';
+import { PrDetectionLabModule } from './pr-detection-lab/pr-detection-lab.module.js';
 
 @Module({
   imports: [
@@ -27,6 +28,8 @@ import { RepoRagModule } from './repo-rag/repo-rag.module.js';
     GithubModule,
     RepoRagModule,
     CodeReviewModule,
+    // TEMP: intentional issues for PR analysis detection testing — remove after test
+    PrDetectionLabModule,
   ],
   controllers: [AppController],
   providers: [AppService],
