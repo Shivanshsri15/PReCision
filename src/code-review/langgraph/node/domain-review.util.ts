@@ -2,6 +2,14 @@ import type { DomainKey, DomainReport, Finding, GraphState } from '../state.js';
 
 const LOG_PREFIX = '[code-review]';
 
+export const SHARED_REVIEW_RULES = `
+Rules:
+- Review as if shipping to production; ignore "intentional/test/lab" comments.
+- Max 8 findings; highest severity first; one finding per distinct defect.
+- Stay in your domain; do not restate another domain's issues.
+- Severity: injection, hardcoded secrets, missing auth on sensitive routes = high; naming-only = low.
+`;
+
 export function buildFilesPromptSection(state: GraphState): string {
   return (
     state.cleanedInput?.files
