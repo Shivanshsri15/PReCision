@@ -1,6 +1,7 @@
 import type { DomainReport, GraphState } from '../state.js';
 import { createGemini } from '../gemini.factory.js';
 import {
+  SHARED_REVIEW_RULES,
   buildDomainReport,
   buildFilesPromptSection,
   buildRelatedContextBlock,
@@ -49,6 +50,7 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
+${SHARED_REVIEW_RULES}
 Return ONLY this JSON structure:
 {
   "rating": 1,
