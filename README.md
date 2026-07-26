@@ -475,431 +475,493 @@ This demonstrates how Precision converts a pull request into a **structured, mul
 
 ```json
 {
-    "prId": 5,
-    "overallSummary": "Found 29 issues (high: 13, medium: 8, low: 8).",
+    "runId": "6a6670c306bcc57734170a83",
+    "prId": 12,
+    "overallSummary": "Found 20 issues (high: 19, medium: 1, low: 0).",
+    "summary": "Found 20 issues (high: 19, medium: 1, low: 0).",
     "domainReports": {
         "quality": {
             "domain": "quality",
-            "rating": 2,
-            "summary": "The PR introduces a significant architectural change by parallelizing domain-specific AI reviews (quality, security, performance) and dynamically strengthening the bug detection prompt. This is a positive step towards more comprehensive and nuanced code analysis. However, it introduces a few correctness risks and API inconsistencies that need to be addressed.",
+            "rating": 1,
+            "summary": "This PR introduces a new module with numerous critical security vulnerabilities, including hardcoded secrets, SQL injection, open redirects, and unauthenticated access to sensitive data. It also contains several significant correctness bugs, performance issues, and maintainability concerns. These issues pose severe risks to the application's security, stability, and performance.",
             "weakAreas": [
-                "API consistency (redundant DTO field)",
-                "LLM input size management",
-                "Finding deduplication logic",
-                "Hardcoded domain list"
+                "Security",
+                "Correctness",
+                "Performance",
+                "Error Handling",
+                "Maintainability"
             ],
             "findings": [
                 {
-                    "file": "src/code-review/code-review.controller.ts",
-                    "issue": "The `maxFiles` parameter in `AnalyzePrDto` is no longer respected or used in the controller logic. The `prFiles.slice(0, maxFiles)` call has been removed, meaning all files are now processed.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Hardcoded sensitive information (database password and API key) is present directly in the source code.",
                     "severity": "high",
-                    "suggestion": "Either remove the `maxFiles` field from `AnalyzePrDto` to reflect its non-usage, or re-introduce the file limiting logic in the controller or `inputGuardNode` if a file limit is still desired. If the intent is to process all files, this should be an explicit design decision, potentially with safeguards against excessively large PRs (e.g., token limits, cost management)."
+                    "suggestion": "Remove all hardcoded secrets. Store sensitive configuration in environment variables, a secure vault, or a dedicated configuration service, and retrieve them at runtime. Ensure these are not committed to version control."
                 },
                 {
-                    "file": "src/code-review/dto/analyze-pr.dto.ts",
-                    "issue": "The `maxFiles` field remains in the DTO, but its corresponding logic has been removed from the controller and `inputGuardNode`. This creates an inconsistent API where a parameter is exposed but has no effect.",
-                    "severity": "medium",
-                    "suggestion": "Remove the `maxFiles` field from `AnalyzePrDto` to align the API contract with the actual implementation. If a file limit is still desired, re-implement the logic and ensure the DTO field is correctly used."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/input-guard.node.ts",
-                    "issue": "The `maxFiles` limit has been removed from the `inputGuardNode`. Combined with the change in the controller, this means there is no longer any mechanism to limit the number of files sent to the LLM.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "Multiple sensitive API endpoints (`/users/query`, `/redirect`, `/debug/config`) are exposed without any authentication or authorization guards.",
                     "severity": "high",
-                    "suggestion": "Processing all files in a large PR can lead to significantly increased LLM costs, longer processing times, and potential token limit errors. Re-evaluate the strategy for handling large PRs. Consider re-introducing a configurable `maxFiles` limit, or implementing a more sophisticated file selection/chunking strategy."
+                    "suggestion": "Implement robust authentication and authorization mechanisms (e.g., JWT guards, role-based access control) for all sensitive endpoints. Ensure that only authorized users can access these operations."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "The finding deduplication logic uses a simple `file::issue` string as a key. This might lead to loss of information if different domain reviewers identify similar issues in the same file but with slightly different `issue` descriptions or unique `suggestion`s.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `buildUserQuery` method constructs a SQL query using string concatenation with unsanitized user input (`userId`), leading to a critical SQL injection vulnerability.",
+                    "severity": "high",
+                    "suggestion": "Use parameterized queries or an ORM (Object-Relational Mapper) to safely construct database queries. Never concatenate user input directly into SQL strings. Implement input validation and sanitization for all user-provided data."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `resolveRedirect` method directly returns a user-provided URL (`nextUrl`) without validation, creating an open redirect vulnerability that can be exploited for phishing or reflected XSS.",
+                    "severity": "high",
+                    "suggestion": "Implement a strict allowlist of trusted domains for redirects. If the `nextUrl` is not on the allowlist, default to a safe page or return an error. Avoid directly reflecting user input in redirects."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "The `/debug/config` endpoint, accessible without authentication, exposes internal configuration details, including hardcoded secrets, which is a severe information disclosure vulnerability.",
+                    "severity": "high",
+                    "suggestion": "Remove the `/debug/config` endpoint entirely from production code. Debugging endpoints that expose sensitive information should never be deployed to production environments. If debugging is necessary, implement secure, authenticated, and audited logging mechanisms."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `findDuplicates` method contains a critical logical error where it uses an assignment operator (`=`) instead of a comparison operator (`===`) within the `if` condition, leading to incorrect behavior and potential data corruption.",
                     "severity": "medium",
-                    "suggestion": "Consider a more robust deduplication strategy. This could involve fuzzy matching for `issue` descriptions, or merging `suggestion`s for similar findings. Alternatively, if findings are truly distinct, they should not be deduplicated, and the `allFindings` array should reflect all unique findings across domains."
+                    "suggestion": "Correct the comparison operator from `=` to `===` in the `if` statement: `if (items[i] === items[j] && i !== j)`. Additionally, consider optimizing the algorithm for finding duplicates (e.g., using a `Set` or hash map) to improve performance from O(n^2) to O(n)."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "The `domains` array (`['quality', 'security', 'performance', 'bugDetection']`) is hardcoded. If new domain reviewers are added in the future, this array will need to be manually updated, which is a potential source of error.",
-                    "severity": "low",
-                    "suggestion": "Consider deriving the list of domains dynamically (e.g., from a central enum or configuration) or from the keys present in `state.domainReports` to make the `assemblerNode` more resilient to future changes."
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `getProfileEmail` method uses non-null assertion operators (`!`) on `user`, `profile`, and `email` (e.g., `user!.profile!.email!`) despite their types being explicitly optional (`?` or `| null`). This creates a high risk of runtime `TypeError` if any of these properties are `null` or `undefined`.",
+                    "severity": "medium",
+                    "suggestion": "Implement proper null/undefined checks (e.g., optional chaining `?.`, `if` statements, or nullish coalescing `??`) to safely access nested properties. For example, `user?.profile?.email?.toLowerCase() ?? ''` or throw a specific error if the data is expected to be present."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/reviewer.node.ts",
-                    "issue": "The prompt string construction, especially with the `addendum` part, uses string concatenation which can become less readable for multi-line prompts with embedded variables.",
-                    "severity": "low",
-                    "suggestion": "Refactor the prompt construction to use template literals (` `` `) for improved readability and maintainability, especially when embedding variables like `addendum` and `state.cleanedInput` properties."
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `loadOrdersForUsers` method exhibits an N+1 query problem by performing sequential `fetchOrders` calls inside a loop for each user ID. This can lead to significant performance degradation, especially with a large number of users.",
+                    "severity": "medium",
+                    "suggestion": "Refactor `loadOrdersForUsers` to fetch orders for all users in a single, optimized query (e.g., using `Promise.all` for concurrent requests if the underlying `fetchOrders` can handle it, or a single batch query if the database supports it). This will reduce the number of round trips and improve efficiency."
                 }
             ]
         },
         "security": {
             "domain": "security",
             "rating": 1,
-            "summary": "The PR introduces a dedicated security review step and improves LLM output parsing, but also introduces a critical prompt injection vulnerability and removes file limits, posing a DoS risk.",
+            "summary": "This pull request introduces a new module (`PrDetectionLabModule`) containing numerous severe security vulnerabilities, including hardcoded secrets, SQL injection, open redirect, and unauthenticated access to sensitive endpoints that expose configuration and user data. These issues pose a critical risk to the application's integrity and confidentiality.",
             "weakAreas": [
-                "Prompt Injection",
-                "Resource Exhaustion / Denial of Service",
-                "Sensitive Data Handling"
+                "authentication/authorization issues",
+                "injection risks (SQL)",
+                "secrets leakage",
+                "unsafe redirects",
+                "insecure defaults and missing validation"
             ],
             "findings": [
                 {
-                    "file": "src/code-review/langgraph/node/join.node.ts",
-                    "issue": "User-provided 'extraPrompt' is directly concatenated into the LLM prompt for bug detection.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Hardcoded database password in source code.",
                     "severity": "high",
-                    "suggestion": "The `extraPrompt` from the user is directly appended to the `bugDetectionPromptAddendum` in `join.node.ts`, which is then used verbatim in the `reviewerNode`'s prompt. This creates a critical prompt injection vulnerability. An attacker could craft a malicious `extraPrompt` to manipulate the LLM's behavior (e.g., to ignore security bugs, generate false positives, or attempt to extract information). Implement robust sanitization or a more secure method for integrating user instructions, such as a separate LLM call to interpret intent or a 'sandwich' prompt structure with strict escaping."
+                    "suggestion": "Remove hardcoded secrets. Use environment variables, a secure configuration management system, or a dedicated secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) to store and retrieve sensitive credentials securely."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/reviewer.node.ts",
-                    "issue": "The 'bugDetectionPromptAddendum' (containing user's 'extraPrompt') is directly injected into the LLM prompt.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Hardcoded payment API key in source code.",
                     "severity": "high",
-                    "suggestion": "As a direct consequence of the `join.node.ts` issue, the `reviewerNode` (bug detection) receives the unsanitized `bugDetectionPromptAddendum` which includes the user's `extraPrompt`. This is the point of execution for the prompt injection. Ensure that any user-controlled input used to construct LLM prompts is thoroughly sanitized or isolated to prevent malicious instructions from altering the LLM's intended function. The current approach explicitly tells the LLM to apply the user prompt, making it highly susceptible."
+                    "suggestion": "Remove hardcoded API keys. Use environment variables or a secure secrets management system. API keys should never be committed to version control."
                 },
                 {
-                    "file": "src/code-review/code-review.controller.ts",
-                    "issue": "Removal of 'maxFiles' limit in controller allows unbounded file fetching.",
-                    "severity": "medium",
-                    "suggestion": "The `maxFiles` limit has been removed from the controller, meaning `githubService.getPullRequestFiles` can fetch an unbounded number of files. While `inputGuardNode` previously had a limit, that has also been removed. This creates a potential resource exhaustion/Denial of Service (DoS) vulnerability if a PR contains an extremely large number of files. Reintroduce a `maxFiles` limit at the earliest possible stage (e.g., in the controller or `githubService` call) to prevent excessive network, memory, and processing resource consumption."
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "SQL Injection vulnerability due to direct string concatenation of user input.",
+                    "severity": "high",
+                    "suggestion": "The `buildUserQuery` method constructs a SQL query by directly concatenating the user-supplied `userId`. This is highly vulnerable to SQL injection. Use parameterized queries, prepared statements, or an ORM that handles parameterization to prevent this. Additionally, implement input validation for `userId`."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/input-guard.node.ts",
-                    "issue": "Removal of 'maxFiles' limit in input guard allows unbounded file processing.",
-                    "severity": "medium",
-                    "suggestion": "The `maxFiles` limit has been removed from the `inputGuardNode`, which means the LLM pipeline will attempt to process all files fetched from GitHub. This exacerbates the DoS risk identified in the controller. Even if the initial fetch is limited, processing an unbounded number of files by the LLM will lead to excessive token usage and processing time. Reintroduce a configurable and reasonable `maxFiles` limit in the `inputGuardNode` to protect against resource exhaustion and control LLM costs."
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "Unauthenticated endpoint exposing a SQL injection vulnerability.",
+                    "severity": "high",
+                    "suggestion": "The `/api/v1/pr-detection-lab/users/query` endpoint, which is vulnerable to SQL injection, lacks any authentication or authorization guards. This makes the vulnerability publicly exploitable. Implement robust authentication (e.g., `@UseGuards(JwtAuthGuard)`) and authorization for all sensitive endpoints."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "Sensitive user-provided 'extraPrompt' is included in the final report.",
-                    "severity": "low",
-                    "suggestion": "The `finalReport` now includes `extraPromptApplied` and `bugDetectionPromptAddendum`. If the `extraPrompt` contains sensitive information (e.g., internal project details, specific attack vectors), this information could be exposed in the final report. Review whether these fields are strictly necessary in the final report, especially if reports are stored or shared without strict access controls. If they are needed for debugging, ensure reports are handled with appropriate security measures."
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Open Redirect and potential Reflected XSS vulnerability.",
+                    "severity": "high",
+                    "suggestion": "The `resolveRedirect` method directly returns a user-supplied URL (`nextUrl`) without any validation or allowlisting. This can be exploited for open redirects, phishing attacks, and potentially reflected XSS. Implement a strict allowlist for redirect URLs. If external redirects are necessary, prompt the user for confirmation. Always sanitize and validate user-supplied input."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "Unauthenticated debug endpoint exposing sensitive configuration and secrets.",
+                    "severity": "high",
+                    "suggestion": "The `/api/v1/pr-detection-lab/debug/config` endpoint exposes sensitive configuration details, including hardcoded secrets, without any authentication or authorization. This endpoint should be removed entirely from production builds. Debugging information should never be exposed publicly."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Sensitive data exposure (SSN) and potential null dereference without validation.",
+                    "severity": "high",
+                    "suggestion": "The `getProfileEmail` method accesses potentially sensitive user data (like `ssn`) from the input object without any authorization checks. While it returns `email`, the access to `ssn` indicates a broader sensitive data handling issue. Additionally, the use of non-null assertion operators (`!`) without prior validation can lead to runtime errors. Implement strict input validation and authorization checks before accessing or processing sensitive user data. Ensure only necessary data is passed and processed."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "Missing authentication on endpoint processing user profile data.",
+                    "severity": "high",
+                    "suggestion": "The `/api/v1/pr-detection-lab/profile/email` endpoint, which processes user profile data, lacks any authentication or authorization guards. This makes it publicly accessible and vulnerable to unauthorized data access or manipulation. Implement robust authentication and authorization for all endpoints handling user profile data."
                 }
             ]
         },
         "performance": {
             "domain": "performance",
             "rating": 1,
-            "summary": "This PR introduces significant performance regressions, primarily due to processing all files in a PR (removing previous limits) and increasing the number of LLM calls from one to four per review. This will lead to substantially higher latency, increased resource consumption, and a significant increase in LLM API costs.",
+            "summary": "This PR introduces significant performance regressions, including a classic N+1 query pattern and an O(N^2) algorithmic complexity issue in critical path functions. These issues could lead to severe latency and resource consumption under load.",
             "weakAreas": [
-                "Algorithmic complexity regression (file processing)",
-                "Excessive LLM calls and token usage",
-                "Increased overall latency",
-                "Higher operational costs (LLM API)",
-                "Increased memory consumption"
+                "N+1 Query Patterns",
+                "Algorithmic Complexity Regressions",
+                "Expensive Synchronous Operations"
             ],
             "findings": [
                 {
-                    "file": "src/code-review/code-review.controller.ts",
-                    "issue": "Removal of `maxFiles` limit leads to processing all PR files.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `loadOrdersForUsers` method exhibits a classic N+1 query pattern. It iterates through a list of user IDs and performs an `await this.fetchOrders()` call for each user sequentially. This means that for `N` users, `N` distinct I/O operations are executed one after another, leading to a cumulative latency of `N * (average fetchOrders latency)`. This will severely degrade performance as the number of user IDs increases.",
                     "severity": "high",
-                    "suggestion": "The removal of `maxFiles` (previously `body.maxFiles ?? 5`) means the system will now fetch and process content for *all* files in a pull request. For large PRs, this will drastically increase the number of `githubService.getFileContent` calls (N+1 pattern), leading to higher network latency, increased memory usage, and significantly larger input payloads for subsequent LLM calls. This is a major algorithmic complexity regression. Consider reintroducing a configurable file limit or implementing a strategy to chunk/summarize large files before passing them to the LLM."
+                    "suggestion": "Refactor `loadOrdersForUsers` to execute all `fetchOrders` calls concurrently using `Promise.all`. This will allow all I/O operations to run in parallel, significantly reducing the total execution time to approximately the latency of a single `fetchOrders` call (plus some overhead)."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/input-guard.node.ts",
-                    "issue": "Removal of `maxFiles` limit in input processing.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "The `findDuplicates` method implements duplicate detection using nested loops, resulting in an O(N^2) time complexity. For large input arrays (`items`), this quadratic complexity will cause a substantial performance bottleneck, leading to slow response times and potential event loop blocking, especially when processing many items.",
                     "severity": "high",
-                    "suggestion": "Similar to the controller, this node no longer limits the number of files processed (`.slice(0, maxFiles)` was removed). This confirms that the full content of all PR files will be passed downstream to *each* LLM reviewer node, exacerbating the issues of increased token usage, latency, and cost. Reintroduce a file limit or implement intelligent content summarization/chunking."
-                },
-                {
-                    "file": "src/code-review/langgraph/graph.ts",
-                    "issue": "Introduction of parallel domain review nodes significantly increases LLM calls.",
-                    "severity": "high",
-                    "suggestion": "The graph now fans out to `qualityReview`, `securityReview`, and `performanceReview` nodes, which run in parallel, followed by the `reviewerNode` (bug detection). This increases the number of LLM calls from one to four per PR review. While parallel execution mitigates sequential latency, the *total* token usage and LLM API cost will increase substantially (roughly 4x baseline, plus the impact of larger inputs from the `maxFiles` removal). This architectural change needs thorough cost-benefit analysis and benchmarking."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/performance-reviewer.node.ts",
-                    "issue": "New LLM call for performance review with full PR file content.",
-                    "severity": "high",
-                    "suggestion": "This new node introduces an additional LLM call dedicated to performance review. The prompt for this call includes the `filesText` which now contains the patch and content for *all* files in the PR. This directly contributes to the increased token usage, latency, and cost identified in the `graph.ts` and `code-review.controller.ts` analyses. Consider strategies to reduce the input size, such as file limits or intelligent summarization."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/quality-reviewer.node.ts",
-                    "issue": "New LLM call for quality review with full PR file content.",
-                    "severity": "high",
-                    "suggestion": "Similar to the performance reviewer, this node adds another LLM call for code quality review, also processing the full PR file content. This further compounds the issues of increased token usage, latency, and cost. Input size reduction strategies are crucial here."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/security-reviewer.node.ts",
-                    "issue": "New LLM call for security review with full PR file content.",
-                    "severity": "high",
-                    "suggestion": "This node introduces a third new LLM call for security review, again processing the full PR file content. The cumulative effect of these three new parallel calls, each with potentially large inputs, will lead to a significant increase in overall resource consumption and cost. Input size management is critical."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/reviewer.node.ts",
-                    "issue": "Bug detection LLM call now processes full PR file content and augmented prompt.",
-                    "severity": "medium",
-                    "suggestion": "This node (now focused on bug detection) still makes an LLM call, processing the full `filesText` (all PR files). Additionally, its prompt is augmented with `bugDetectionPromptAddendum` (derived from `extraPrompt` and `weakAreas`), which can further increase token count. This call runs sequentially after the parallel domain reviews, adding to the overall latency. While the prompt augmentation is valuable, the large input size from all files remains a concern."
-                },
-                {
-                    "file": "src/code-review/langgraph/gemini.factory.ts",
-                    "issue": "Default LLM model upgraded from `gemini-1.5-flash` to `gemini-2.5-flash`.",
-                    "severity": "low",
-                    "suggestion": "Upgrading the LLM model can have performance implications (latency, throughput) and cost implications. While 'flash' models are optimized for speed, a version bump might introduce changes. It's important to benchmark the new model's performance and cost characteristics against the previous version, especially given the increased number of calls and input sizes in this PR."
-                },
-                {
-                    "file": "src/code-review/langgraph/state.ts",
-                    "issue": "Increased memory footprint for `GraphState` due to new domain reports.",
-                    "severity": "low",
-                    "suggestion": "The introduction of `domainReports` to the `GraphState` means that the state object will now hold more data (findings, summaries, ratings for multiple domains). This increases the memory footprint per review. While likely not critical for individual reviews, it could impact overall system memory usage under high concurrency."
+                    "suggestion": "Optimize the `findDuplicates` method to achieve O(N) average time complexity. This can be done by using a `Set` data structure to efficiently track seen items during a single pass through the input array. Add items to the set and check for existence to identify duplicates."
                 }
             ]
         },
         "bugDetection": {
             "domain": "bugDetection",
             "rating": 1,
-            "summary": "This PR introduces a significant architectural change to the AI review process, enabling parallel domain-specific reviews. However, it also introduces critical regressions related to resource management, potential runtime errors, and increased operational costs. The removal of file limits is a major concern.",
+            "summary": "This PR introduces multiple critical security vulnerabilities, correctness bugs, and performance regressions. Key issues include SQL injection, hardcoded secrets, missing authentication on sensitive endpoints, open redirects, potential runtime errors due to null dereferencing, and inefficient algorithms.",
             "weakAreas": [
-                "LLM input size management",
-                "Resource Exhaustion / Denial of Service",
-                "Excessive LLM calls and token usage",
-                "Higher operational costs (LLM API)",
-                "Increased overall latency",
-                "API consistency",
-                "Hardcoded domain list",
-                "Logic mistakes"
+                "Security",
+                "Correctness",
+                "Performance",
+                "Error Handling",
+                "Maintainability",
+                "authentication/authorization issues",
+                "injection risks (SQL)",
+                "secrets leakage",
+                "unsafe redirects",
+                "missing validation"
             ],
             "findings": [
                 {
-                    "file": "src/code-review/code-review.controller.ts",
-                    "issue": "Critical: Removal of `maxFiles` limit, leading to unbounded PR file processing.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "SQL Injection vulnerability in `buildUserQuery`.",
                     "severity": "high",
-                    "suggestion": "The `maxFiles` limit (previously 5) has been removed from the controller. This means *all* files in a PR will now be processed. This is a critical regression that can lead to: 1. **Resource Exhaustion/Denial of Service:** Processing hundreds or thousands of files can overwhelm the system. 2. **LLM Input Size Management:** The combined content of many files will likely exceed the LLM's context window, leading to truncated input, poor review quality, or API errors. 3. **Higher Operational Costs & Latency:** More files mean significantly increased token usage and longer processing times. Reintroduce a configurable `maxFiles` limit at the controller level to prevent excessive data fetching from GitHub and manage LLM input size effectively."
+                    "suggestion": "The `buildUserQuery` method directly concatenates user-provided `userId` into a SQL query string. This is a classic SQL injection vulnerability. Use parameterized queries or an ORM to safely construct database queries."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/input-guard.node.ts",
-                    "issue": "Critical: Removal of `maxFiles` limit in `inputGuardNode`.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Hardcoded sensitive secrets (`dbPassword`, `stripeKey`) and their exposure via `debugConfig`.",
                     "severity": "high",
-                    "suggestion": "Similar to the controller, the `inputGuardNode` also removes its `maxFiles` limit. This eliminates the last line of defense for limiting the number of files passed to the LLMs. This exacerbates the resource management and LLM input size issues. The `inputGuardNode` should enforce a file limit, even if the controller also has one, to act as a final safeguard."
+                    "suggestion": "Sensitive information like database passwords and API keys must never be hardcoded in source code. They should be loaded from environment variables, a secure configuration service, or a secret management system. Additionally, the `debugConfig` method should be removed or secured with strong authentication and authorization, as it directly exposes these secrets."
                 },
                 {
-                    "file": "src/code-review/langgraph/gemini.factory.ts",
-                    "issue": "High: LLM model name `gemini-2.5-flash` is likely a typo or non-existent.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+                    "issue": "Missing authentication and authorization on multiple sensitive API endpoints.",
                     "severity": "high",
-                    "suggestion": "The default LLM model has been changed from `gemini-1.5-flash` to `gemini-2.5-flash`. As of current knowledge, `gemini-2.5-flash` is not a valid or recognized Gemini model name. This is likely a typo. If it's intended to be `gemini-1.5-pro`, it represents a significant increase in operational costs and latency. If it's a non-existent model, it will cause runtime errors. Clarify and correct the LLM model name. If `gemini-1.5-pro` is intended, explicitly acknowledge the increased cost and latency implications."
+                    "suggestion": "Several routes, including `/users/query`, `/redirect`, `/debug/config`, and `/profile/email`, lack authentication guards. This allows unauthenticated access to potentially sensitive operations (e.g., SQL query building, config dumping, user profile data) and vulnerabilities (e.g., open redirect). Apply appropriate authentication (e.g., `JwtAuthGuard`) and authorization guards to all sensitive endpoints."
                 },
                 {
-                    "file": "src/code-review/langgraph/graph.ts",
-                    "issue": "Medium: Increased LLM calls and higher operational costs due to parallel domain reviews.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Open redirect vulnerability in `resolveRedirect`.",
+                    "severity": "high",
+                    "suggestion": "The `resolveRedirect` method directly returns a user-provided `nextUrl` without validation. This creates an open redirect vulnerability, which can be exploited for phishing attacks or reflected XSS. Implement a strict allowlist of trusted domains for redirects, or use relative paths only."
+                },
+                {
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Potential runtime null dereference in `getProfileEmail`.",
                     "severity": "medium",
-                    "suggestion": "The new graph introduces three additional LLM calls (`qualityReview`, `securityReview`, `performanceReview`) that run in parallel, in addition to the original `reviewer` (bug detection) call. While parallel execution can reduce wall-clock latency, it significantly increases the total number of LLM invocations and token usage, leading to higher operational costs. Document the expected increase in operational costs and token usage. Consider strategies to manage this, such as conditional execution of domain reviewers based on PR characteristics or user preferences."
+                    "suggestion": "The `getProfileEmail` method uses non-null assertion operators (`!`) on `user`, `user.profile`, and `user.profile.email`. This will cause a runtime `TypeError` if any of these properties are `null` or `undefined`. Implement robust null/undefined checks (e.g., optional chaining `?.` or explicit `if` checks) to handle these cases gracefully."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "Medium: Hardcoded domain list in `assembler.node.ts`.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Logic error: assignment operator `=` used instead of comparison operator `===` in `findDuplicates`.",
                     "severity": "medium",
-                    "suggestion": "The `domains` array (`['quality', 'security', 'performance', 'bugDetection']`) is hardcoded. This makes the system brittle and difficult to extend or modify if new domain reviewers are added or existing ones are changed. Centralize the definition of domain keys, perhaps in `state.ts` or a dedicated configuration file, and dynamically derive the list in nodes that need it."
+                    "suggestion": "The condition `(items[i] = items[j]!)` in `findDuplicates` uses an assignment operator, which will always evaluate to a truthy value (unless `items[j]` is an empty string) and also mutate the `items` array. This leads to incorrect duplicate detection and unintended side effects. Change `=` to `===` for proper comparison."
                 },
                 {
-                    "file": "src/code-review/langgraph/node/join.node.ts",
-                    "issue": "Medium: Implicit hardcoded domain list in `join.node.ts`.",
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "N+1 Query Pattern in `loadOrdersForUsers`.",
                     "severity": "medium",
-                    "suggestion": "The `joinNode` implicitly relies on specific domain keys (`quality`, `security`, `performance`) being present in `state.domainReports`. Similar to the `assembler.node.ts` issue, this makes the node brittle to changes in the domain review structure. Consider using a more dynamic approach to iterate over available domain reports if possible, or centralize domain key definitions."
+                    "suggestion": "The `loadOrdersForUsers` method iterates through `userIds` and `await`s `fetchOrders` sequentially for each user. This results in an N+1 query pattern, causing significant performance degradation for large `userIds` arrays. Refactor to use `Promise.all` to fetch orders concurrently, or implement a single batch query if the underlying data source supports it."
                 },
                 {
-                    "file": "src/code-review/dto/analyze-pr.dto.ts",
-                    "issue": "Low: Redundant `maxFiles` field in `AnalyzePrDto`.",
-                    "severity": "low",
-                    "suggestion": "The `maxFiles` field is still present in `AnalyzePrDto` but is no longer used by the `CodeReviewController` or `inputGuardNode`. This creates API inconsistency and potential confusion. Remove the `maxFiles` field from `AnalyzePrDto` to maintain API consistency and clarity, or re-purpose it if a file limit is reintroduced."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "Low: Breaking change in `finalReport` structure.",
-                    "severity": "low",
-                    "suggestion": "The structure of the `finalReport` has changed significantly, introducing `overallSummary`, `domainReports`, `allFindings`, and `counts`, while the original `summary` and `findings` fields are deprecated or replaced. This is a breaking change for any client consuming the `finalReport` directly. Clearly communicate this API change to consumers and ensure proper versioning or migration paths are in place if this is a public API."
-                },
-                {
-                    "file": "src/code-review/langgraph/node/assembler.node.ts",
-                    "issue": "Low: Deduplication logic limitation for findings.",
-                    "severity": "low",
-                    "suggestion": "The finding deduplication logic uses `file::issue` as a key. While effective for exact duplicates, it will not deduplicate semantically similar issues that have slightly different `issue` descriptions (e.g., 'Missing null check' vs 'Null pointer risk'). Also, if the same issue is found with different severities or suggestions, the first one encountered is kept. Document this behavior. For future enhancements, consider more advanced semantic deduplication if this becomes a significant problem."
+                    "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+                    "issue": "Algorithmic complexity regression: O(n^2) for `findDuplicates`.",
+                    "severity": "medium",
+                    "suggestion": "The `findDuplicates` method uses nested loops, resulting in an O(n^2) time complexity. For finding duplicates, a more efficient approach using a `Set` (hash set) would achieve O(n) average time complexity. This is a significant performance regression for larger input arrays."
                 }
             ]
         }
     },
     "allFindings": [
         {
-            "file": "src/code-review/code-review.controller.ts",
-            "issue": "The `maxFiles` parameter in `AnalyzePrDto` is no longer respected or used in the controller logic. The `prFiles.slice(0, maxFiles)` call has been removed, meaning all files are now processed.",
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Multiple sensitive API endpoints (`/users/query`, `/redirect`, `/debug/config`) are exposed without any authentication or authorization guards.",
             "severity": "high",
-            "suggestion": "Either remove the `maxFiles` field from `AnalyzePrDto` to reflect its non-usage, or re-introduce the file limiting logic in the controller or `inputGuardNode` if a file limit is still desired. If the intent is to process all files, this should be an explicit design decision, potentially with safeguards against excessively large PRs (e.g., token limits, cost management)."
+            "suggestion": "Implement robust authentication and authorization mechanisms (e.g., JWT guards, role-based access control) for all sensitive endpoints. Ensure that only authorized users can access these operations."
         },
         {
-            "file": "src/code-review/dto/analyze-pr.dto.ts",
-            "issue": "The `maxFiles` field remains in the DTO, but its corresponding logic has been removed from the controller and `inputGuardNode`. This creates an inconsistent API where a parameter is exposed but has no effect.",
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "The `/debug/config` endpoint, accessible without authentication, exposes internal configuration details, including hardcoded secrets, which is a severe information disclosure vulnerability.",
+            "severity": "high",
+            "suggestion": "Remove the `/debug/config` endpoint entirely from production code. Debugging endpoints that expose sensitive information should never be deployed to production environments. If debugging is necessary, implement secure, authenticated, and audited logging mechanisms."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Unauthenticated endpoint exposing a SQL injection vulnerability.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/users/query` endpoint, which is vulnerable to SQL injection, lacks any authentication or authorization guards. This makes the vulnerability publicly exploitable. Implement robust authentication (e.g., `@UseGuards(JwtAuthGuard)`) and authorization for all sensitive endpoints."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Unauthenticated debug endpoint exposing sensitive configuration and secrets.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/debug/config` endpoint exposes sensitive configuration details, including hardcoded secrets, without any authentication or authorization. This endpoint should be removed entirely from production builds. Debugging information should never be exposed publicly."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Missing authentication on endpoint processing user profile data.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/profile/email` endpoint, which processes user profile data, lacks any authentication or authorization guards. This makes it publicly accessible and vulnerable to unauthorized data access or manipulation. Implement robust authentication and authorization for all endpoints handling user profile data."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Missing authentication and authorization on multiple sensitive API endpoints.",
+            "severity": "high",
+            "suggestion": "Several routes, including `/users/query`, `/redirect`, `/debug/config`, and `/profile/email`, lack authentication guards. This allows unauthenticated access to potentially sensitive operations (e.g., SQL query building, config dumping, user profile data) and vulnerabilities (e.g., open redirect). Apply appropriate authentication (e.g., `JwtAuthGuard`) and authorization guards to all sensitive endpoints."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded sensitive information (database password and API key) is present directly in the source code.",
+            "severity": "high",
+            "suggestion": "Remove all hardcoded secrets. Store sensitive configuration in environment variables, a secure vault, or a dedicated configuration service, and retrieve them at runtime. Ensure these are not committed to version control."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `buildUserQuery` method constructs a SQL query using string concatenation with unsanitized user input (`userId`), leading to a critical SQL injection vulnerability.",
+            "severity": "high",
+            "suggestion": "Use parameterized queries or an ORM (Object-Relational Mapper) to safely construct database queries. Never concatenate user input directly into SQL strings. Implement input validation and sanitization for all user-provided data."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `resolveRedirect` method directly returns a user-provided URL (`nextUrl`) without validation, creating an open redirect vulnerability that can be exploited for phishing or reflected XSS.",
+            "severity": "high",
+            "suggestion": "Implement a strict allowlist of trusted domains for redirects. If the `nextUrl` is not on the allowlist, default to a safe page or return an error. Avoid directly reflecting user input in redirects."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `loadOrdersForUsers` method exhibits a classic N+1 query pattern. It iterates through a list of user IDs and performs an `await this.fetchOrders()` call for each user sequentially. This means that for `N` users, `N` distinct I/O operations are executed one after another, leading to a cumulative latency of `N * (average fetchOrders latency)`. This will severely degrade performance as the number of user IDs increases.",
+            "severity": "high",
+            "suggestion": "Refactor `loadOrdersForUsers` to execute all `fetchOrders` calls concurrently using `Promise.all`. This will allow all I/O operations to run in parallel, significantly reducing the total execution time to approximately the latency of a single `fetchOrders` call (plus some overhead)."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded database password in source code.",
+            "severity": "high",
+            "suggestion": "Remove hardcoded secrets. Use environment variables, a secure configuration management system, or a dedicated secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) to store and retrieve sensitive credentials securely."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded payment API key in source code.",
+            "severity": "high",
+            "suggestion": "Remove hardcoded API keys. Use environment variables or a secure secrets management system. API keys should never be committed to version control."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "SQL Injection vulnerability due to direct string concatenation of user input.",
+            "severity": "high",
+            "suggestion": "The `buildUserQuery` method constructs a SQL query by directly concatenating the user-supplied `userId`. This is highly vulnerable to SQL injection. Use parameterized queries, prepared statements, or an ORM that handles parameterization to prevent this. Additionally, implement input validation for `userId`."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Open Redirect and potential Reflected XSS vulnerability.",
+            "severity": "high",
+            "suggestion": "The `resolveRedirect` method directly returns a user-supplied URL (`nextUrl`) without any validation or allowlisting. This can be exploited for open redirects, phishing attacks, and potentially reflected XSS. Implement a strict allowlist for redirect URLs. If external redirects are necessary, prompt the user for confirmation. Always sanitize and validate user-supplied input."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Sensitive data exposure (SSN) and potential null dereference without validation.",
+            "severity": "high",
+            "suggestion": "The `getProfileEmail` method accesses potentially sensitive user data (like `ssn`) from the input object without any authorization checks. While it returns `email`, the access to `ssn` indicates a broader sensitive data handling issue. Additionally, the use of non-null assertion operators (`!`) without prior validation can lead to runtime errors. Implement strict input validation and authorization checks before accessing or processing sensitive user data. Ensure only necessary data is passed and processed."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `findDuplicates` method implements duplicate detection using nested loops, resulting in an O(N^2) time complexity. For large input arrays (`items`), this quadratic complexity will cause a substantial performance bottleneck, leading to slow response times and potential event loop blocking, especially when processing many items.",
+            "severity": "high",
+            "suggestion": "Optimize the `findDuplicates` method to achieve O(N) average time complexity. This can be done by using a `Set` data structure to efficiently track seen items during a single pass through the input array. Add items to the set and check for existence to identify duplicates."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "SQL Injection vulnerability in `buildUserQuery`.",
+            "severity": "high",
+            "suggestion": "The `buildUserQuery` method directly concatenates user-provided `userId` into a SQL query string. This is a classic SQL injection vulnerability. Use parameterized queries or an ORM to safely construct database queries."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded sensitive secrets (`dbPassword`, `stripeKey`) and their exposure via `debugConfig`.",
+            "severity": "high",
+            "suggestion": "Sensitive information like database passwords and API keys must never be hardcoded in source code. They should be loaded from environment variables, a secure configuration service, or a secret management system. Additionally, the `debugConfig` method should be removed or secured with strong authentication and authorization, as it directly exposes these secrets."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Open redirect vulnerability in `resolveRedirect`.",
+            "severity": "high",
+            "suggestion": "The `resolveRedirect` method directly returns a user-provided `nextUrl` without validation. This creates an open redirect vulnerability, which can be exploited for phishing attacks or reflected XSS. Implement a strict allowlist of trusted domains for redirects, or use relative paths only."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `findDuplicates` method contains a critical logical error where it uses an assignment operator (`=`) instead of a comparison operator (`===`) within the `if` condition, leading to incorrect behavior and potential data corruption.",
             "severity": "medium",
-            "suggestion": "Remove the `maxFiles` field from `AnalyzePrDto` to align the API contract with the actual implementation. If a file limit is still desired, re-implement the logic and ensure the DTO field is correctly used."
-        },
+            "suggestion": "Correct the comparison operator from `=` to `===` in the `if` statement: `if (items[i] === items[j] && i !== j)`. Additionally, consider optimizing the algorithm for finding duplicates (e.g., using a `Set` or hash map) to improve performance from O(n^2) to O(n)."
+        }
+    ],
+    "findings": [
         {
-            "file": "src/code-review/langgraph/node/input-guard.node.ts",
-            "issue": "The `maxFiles` limit has been removed from the `inputGuardNode`. Combined with the change in the controller, this means there is no longer any mechanism to limit the number of files sent to the LLM.",
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Multiple sensitive API endpoints (`/users/query`, `/redirect`, `/debug/config`) are exposed without any authentication or authorization guards.",
             "severity": "high",
-            "suggestion": "Processing all files in a large PR can lead to significantly increased LLM costs, longer processing times, and potential token limit errors. Re-evaluate the strategy for handling large PRs. Consider re-introducing a configurable `maxFiles` limit, or implementing a more sophisticated file selection/chunking strategy."
+            "suggestion": "Implement robust authentication and authorization mechanisms (e.g., JWT guards, role-based access control) for all sensitive endpoints. Ensure that only authorized users can access these operations."
         },
         {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "The finding deduplication logic uses a simple `file::issue` string as a key. This might lead to loss of information if different domain reviewers identify similar issues in the same file but with slightly different `issue` descriptions or unique `suggestion`s.",
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "The `/debug/config` endpoint, accessible without authentication, exposes internal configuration details, including hardcoded secrets, which is a severe information disclosure vulnerability.",
+            "severity": "high",
+            "suggestion": "Remove the `/debug/config` endpoint entirely from production code. Debugging endpoints that expose sensitive information should never be deployed to production environments. If debugging is necessary, implement secure, authenticated, and audited logging mechanisms."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Unauthenticated endpoint exposing a SQL injection vulnerability.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/users/query` endpoint, which is vulnerable to SQL injection, lacks any authentication or authorization guards. This makes the vulnerability publicly exploitable. Implement robust authentication (e.g., `@UseGuards(JwtAuthGuard)`) and authorization for all sensitive endpoints."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Unauthenticated debug endpoint exposing sensitive configuration and secrets.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/debug/config` endpoint exposes sensitive configuration details, including hardcoded secrets, without any authentication or authorization. This endpoint should be removed entirely from production builds. Debugging information should never be exposed publicly."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Missing authentication on endpoint processing user profile data.",
+            "severity": "high",
+            "suggestion": "The `/api/v1/pr-detection-lab/profile/email` endpoint, which processes user profile data, lacks any authentication or authorization guards. This makes it publicly accessible and vulnerable to unauthorized data access or manipulation. Implement robust authentication and authorization for all endpoints handling user profile data."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.controller.ts",
+            "issue": "Missing authentication and authorization on multiple sensitive API endpoints.",
+            "severity": "high",
+            "suggestion": "Several routes, including `/users/query`, `/redirect`, `/debug/config`, and `/profile/email`, lack authentication guards. This allows unauthenticated access to potentially sensitive operations (e.g., SQL query building, config dumping, user profile data) and vulnerabilities (e.g., open redirect). Apply appropriate authentication (e.g., `JwtAuthGuard`) and authorization guards to all sensitive endpoints."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded sensitive information (database password and API key) is present directly in the source code.",
+            "severity": "high",
+            "suggestion": "Remove all hardcoded secrets. Store sensitive configuration in environment variables, a secure vault, or a dedicated configuration service, and retrieve them at runtime. Ensure these are not committed to version control."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `buildUserQuery` method constructs a SQL query using string concatenation with unsanitized user input (`userId`), leading to a critical SQL injection vulnerability.",
+            "severity": "high",
+            "suggestion": "Use parameterized queries or an ORM (Object-Relational Mapper) to safely construct database queries. Never concatenate user input directly into SQL strings. Implement input validation and sanitization for all user-provided data."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `resolveRedirect` method directly returns a user-provided URL (`nextUrl`) without validation, creating an open redirect vulnerability that can be exploited for phishing or reflected XSS.",
+            "severity": "high",
+            "suggestion": "Implement a strict allowlist of trusted domains for redirects. If the `nextUrl` is not on the allowlist, default to a safe page or return an error. Avoid directly reflecting user input in redirects."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `loadOrdersForUsers` method exhibits a classic N+1 query pattern. It iterates through a list of user IDs and performs an `await this.fetchOrders()` call for each user sequentially. This means that for `N` users, `N` distinct I/O operations are executed one after another, leading to a cumulative latency of `N * (average fetchOrders latency)`. This will severely degrade performance as the number of user IDs increases.",
+            "severity": "high",
+            "suggestion": "Refactor `loadOrdersForUsers` to execute all `fetchOrders` calls concurrently using `Promise.all`. This will allow all I/O operations to run in parallel, significantly reducing the total execution time to approximately the latency of a single `fetchOrders` call (plus some overhead)."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded database password in source code.",
+            "severity": "high",
+            "suggestion": "Remove hardcoded secrets. Use environment variables, a secure configuration management system, or a dedicated secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) to store and retrieve sensitive credentials securely."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded payment API key in source code.",
+            "severity": "high",
+            "suggestion": "Remove hardcoded API keys. Use environment variables or a secure secrets management system. API keys should never be committed to version control."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "SQL Injection vulnerability due to direct string concatenation of user input.",
+            "severity": "high",
+            "suggestion": "The `buildUserQuery` method constructs a SQL query by directly concatenating the user-supplied `userId`. This is highly vulnerable to SQL injection. Use parameterized queries, prepared statements, or an ORM that handles parameterization to prevent this. Additionally, implement input validation for `userId`."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Open Redirect and potential Reflected XSS vulnerability.",
+            "severity": "high",
+            "suggestion": "The `resolveRedirect` method directly returns a user-supplied URL (`nextUrl`) without any validation or allowlisting. This can be exploited for open redirects, phishing attacks, and potentially reflected XSS. Implement a strict allowlist for redirect URLs. If external redirects are necessary, prompt the user for confirmation. Always sanitize and validate user-supplied input."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Sensitive data exposure (SSN) and potential null dereference without validation.",
+            "severity": "high",
+            "suggestion": "The `getProfileEmail` method accesses potentially sensitive user data (like `ssn`) from the input object without any authorization checks. While it returns `email`, the access to `ssn` indicates a broader sensitive data handling issue. Additionally, the use of non-null assertion operators (`!`) without prior validation can lead to runtime errors. Implement strict input validation and authorization checks before accessing or processing sensitive user data. Ensure only necessary data is passed and processed."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `findDuplicates` method implements duplicate detection using nested loops, resulting in an O(N^2) time complexity. For large input arrays (`items`), this quadratic complexity will cause a substantial performance bottleneck, leading to slow response times and potential event loop blocking, especially when processing many items.",
+            "severity": "high",
+            "suggestion": "Optimize the `findDuplicates` method to achieve O(N) average time complexity. This can be done by using a `Set` data structure to efficiently track seen items during a single pass through the input array. Add items to the set and check for existence to identify duplicates."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "SQL Injection vulnerability in `buildUserQuery`.",
+            "severity": "high",
+            "suggestion": "The `buildUserQuery` method directly concatenates user-provided `userId` into a SQL query string. This is a classic SQL injection vulnerability. Use parameterized queries or an ORM to safely construct database queries."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Hardcoded sensitive secrets (`dbPassword`, `stripeKey`) and their exposure via `debugConfig`.",
+            "severity": "high",
+            "suggestion": "Sensitive information like database passwords and API keys must never be hardcoded in source code. They should be loaded from environment variables, a secure configuration service, or a secret management system. Additionally, the `debugConfig` method should be removed or secured with strong authentication and authorization, as it directly exposes these secrets."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "Open redirect vulnerability in `resolveRedirect`.",
+            "severity": "high",
+            "suggestion": "The `resolveRedirect` method directly returns a user-provided `nextUrl` without validation. This creates an open redirect vulnerability, which can be exploited for phishing attacks or reflected XSS. Implement a strict allowlist of trusted domains for redirects, or use relative paths only."
+        },
+        {
+            "file": "src/pr-detection-lab/pr-detection-lab.service.ts",
+            "issue": "The `findDuplicates` method contains a critical logical error where it uses an assignment operator (`=`) instead of a comparison operator (`===`) within the `if` condition, leading to incorrect behavior and potential data corruption.",
             "severity": "medium",
-            "suggestion": "Consider a more robust deduplication strategy. This could involve fuzzy matching for `issue` descriptions, or merging `suggestion`s for similar findings. Alternatively, if findings are truly distinct, they should not be deduplicated, and the `allFindings` array should reflect all unique findings across domains."
-        },
-        {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "The `domains` array (`['quality', 'security', 'performance', 'bugDetection']`) is hardcoded. If new domain reviewers are added in the future, this array will need to be manually updated, which is a potential source of error.",
-            "severity": "low",
-            "suggestion": "Consider deriving the list of domains dynamically (e.g., from a central enum or configuration) or from the keys present in `state.domainReports` to make the `assemblerNode` more resilient to future changes."
-        },
-        {
-            "file": "src/code-review/langgraph/node/reviewer.node.ts",
-            "issue": "The prompt string construction, especially with the `addendum` part, uses string concatenation which can become less readable for multi-line prompts with embedded variables.",
-            "severity": "low",
-            "suggestion": "Refactor the prompt construction to use template literals (` `` `) for improved readability and maintainability, especially when embedding variables like `addendum` and `state.cleanedInput` properties."
-        },
-        {
-            "file": "src/code-review/langgraph/node/join.node.ts",
-            "issue": "User-provided 'extraPrompt' is directly concatenated into the LLM prompt for bug detection.",
-            "severity": "high",
-            "suggestion": "The `extraPrompt` from the user is directly appended to the `bugDetectionPromptAddendum` in `join.node.ts`, which is then used verbatim in the `reviewerNode`'s prompt. This creates a critical prompt injection vulnerability. An attacker could craft a malicious `extraPrompt` to manipulate the LLM's behavior (e.g., to ignore security bugs, generate false positives, or attempt to extract information). Implement robust sanitization or a more secure method for integrating user instructions, such as a separate LLM call to interpret intent or a 'sandwich' prompt structure with strict escaping."
-        },
-        {
-            "file": "src/code-review/langgraph/node/reviewer.node.ts",
-            "issue": "The 'bugDetectionPromptAddendum' (containing user's 'extraPrompt') is directly injected into the LLM prompt.",
-            "severity": "high",
-            "suggestion": "As a direct consequence of the `join.node.ts` issue, the `reviewerNode` (bug detection) receives the unsanitized `bugDetectionPromptAddendum` which includes the user's `extraPrompt`. This is the point of execution for the prompt injection. Ensure that any user-controlled input used to construct LLM prompts is thoroughly sanitized or isolated to prevent malicious instructions from altering the LLM's intended function. The current approach explicitly tells the LLM to apply the user prompt, making it highly susceptible."
-        },
-        {
-            "file": "src/code-review/code-review.controller.ts",
-            "issue": "Removal of 'maxFiles' limit in controller allows unbounded file fetching.",
-            "severity": "medium",
-            "suggestion": "The `maxFiles` limit has been removed from the controller, meaning `githubService.getPullRequestFiles` can fetch an unbounded number of files. While `inputGuardNode` previously had a limit, that has also been removed. This creates a potential resource exhaustion/Denial of Service (DoS) vulnerability if a PR contains an extremely large number of files. Reintroduce a `maxFiles` limit at the earliest possible stage (e.g., in the controller or `githubService` call) to prevent excessive network, memory, and processing resource consumption."
-        },
-        {
-            "file": "src/code-review/langgraph/node/input-guard.node.ts",
-            "issue": "Removal of 'maxFiles' limit in input guard allows unbounded file processing.",
-            "severity": "medium",
-            "suggestion": "The `maxFiles` limit has been removed from the `inputGuardNode`, which means the LLM pipeline will attempt to process all files fetched from GitHub. This exacerbates the DoS risk identified in the controller. Even if the initial fetch is limited, processing an unbounded number of files by the LLM will lead to excessive token usage and processing time. Reintroduce a configurable and reasonable `maxFiles` limit in the `inputGuardNode` to protect against resource exhaustion and control LLM costs."
-        },
-        {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "Sensitive user-provided 'extraPrompt' is included in the final report.",
-            "severity": "low",
-            "suggestion": "The `finalReport` now includes `extraPromptApplied` and `bugDetectionPromptAddendum`. If the `extraPrompt` contains sensitive information (e.g., internal project details, specific attack vectors), this information could be exposed in the final report. Review whether these fields are strictly necessary in the final report, especially if reports are stored or shared without strict access controls. If they are needed for debugging, ensure reports are handled with appropriate security measures."
-        },
-        {
-            "file": "src/code-review/code-review.controller.ts",
-            "issue": "Removal of `maxFiles` limit leads to processing all PR files.",
-            "severity": "high",
-            "suggestion": "The removal of `maxFiles` (previously `body.maxFiles ?? 5`) means the system will now fetch and process content for *all* files in a pull request. For large PRs, this will drastically increase the number of `githubService.getFileContent` calls (N+1 pattern), leading to higher network latency, increased memory usage, and significantly larger input payloads for subsequent LLM calls. This is a major algorithmic complexity regression. Consider reintroducing a configurable file limit or implementing a strategy to chunk/summarize large files before passing them to the LLM."
-        },
-        {
-            "file": "src/code-review/langgraph/node/input-guard.node.ts",
-            "issue": "Removal of `maxFiles` limit in input processing.",
-            "severity": "high",
-            "suggestion": "Similar to the controller, this node no longer limits the number of files processed (`.slice(0, maxFiles)` was removed). This confirms that the full content of all PR files will be passed downstream to *each* LLM reviewer node, exacerbating the issues of increased token usage, latency, and cost. Reintroduce a file limit or implement intelligent content summarization/chunking."
-        },
-        {
-            "file": "src/code-review/langgraph/graph.ts",
-            "issue": "Introduction of parallel domain review nodes significantly increases LLM calls.",
-            "severity": "high",
-            "suggestion": "The graph now fans out to `qualityReview`, `securityReview`, and `performanceReview` nodes, which run in parallel, followed by the `reviewerNode` (bug detection). This increases the number of LLM calls from one to four per PR review. While parallel execution mitigates sequential latency, the *total* token usage and LLM API cost will increase substantially (roughly 4x baseline, plus the impact of larger inputs from the `maxFiles` removal). This architectural change needs thorough cost-benefit analysis and benchmarking."
-        },
-        {
-            "file": "src/code-review/langgraph/node/performance-reviewer.node.ts",
-            "issue": "New LLM call for performance review with full PR file content.",
-            "severity": "high",
-            "suggestion": "This new node introduces an additional LLM call dedicated to performance review. The prompt for this call includes the `filesText` which now contains the patch and content for *all* files in the PR. This directly contributes to the increased token usage, latency, and cost identified in the `graph.ts` and `code-review.controller.ts` analyses. Consider strategies to reduce the input size, such as file limits or intelligent summarization."
-        },
-        {
-            "file": "src/code-review/langgraph/node/quality-reviewer.node.ts",
-            "issue": "New LLM call for quality review with full PR file content.",
-            "severity": "high",
-            "suggestion": "Similar to the performance reviewer, this node adds another LLM call for code quality review, also processing the full PR file content. This further compounds the issues of increased token usage, latency, and cost. Input size reduction strategies are crucial here."
-        },
-        {
-            "file": "src/code-review/langgraph/node/security-reviewer.node.ts",
-            "issue": "New LLM call for security review with full PR file content.",
-            "severity": "high",
-            "suggestion": "This node introduces a third new LLM call for security review, again processing the full PR file content. The cumulative effect of these three new parallel calls, each with potentially large inputs, will lead to a significant increase in overall resource consumption and cost. Input size management is critical."
-        },
-        {
-            "file": "src/code-review/langgraph/node/reviewer.node.ts",
-            "issue": "Bug detection LLM call now processes full PR file content and augmented prompt.",
-            "severity": "medium",
-            "suggestion": "This node (now focused on bug detection) still makes an LLM call, processing the full `filesText` (all PR files). Additionally, its prompt is augmented with `bugDetectionPromptAddendum` (derived from `extraPrompt` and `weakAreas`), which can further increase token count. This call runs sequentially after the parallel domain reviews, adding to the overall latency. While the prompt augmentation is valuable, the large input size from all files remains a concern."
-        },
-        {
-            "file": "src/code-review/langgraph/gemini.factory.ts",
-            "issue": "Default LLM model upgraded from `gemini-1.5-flash` to `gemini-2.5-flash`.",
-            "severity": "low",
-            "suggestion": "Upgrading the LLM model can have performance implications (latency, throughput) and cost implications. While 'flash' models are optimized for speed, a version bump might introduce changes. It's important to benchmark the new model's performance and cost characteristics against the previous version, especially given the increased number of calls and input sizes in this PR."
-        },
-        {
-            "file": "src/code-review/langgraph/state.ts",
-            "issue": "Increased memory footprint for `GraphState` due to new domain reports.",
-            "severity": "low",
-            "suggestion": "The introduction of `domainReports` to the `GraphState` means that the state object will now hold more data (findings, summaries, ratings for multiple domains). This increases the memory footprint per review. While likely not critical for individual reviews, it could impact overall system memory usage under high concurrency."
-        },
-        {
-            "file": "src/code-review/code-review.controller.ts",
-            "issue": "Critical: Removal of `maxFiles` limit, leading to unbounded PR file processing.",
-            "severity": "high",
-            "suggestion": "The `maxFiles` limit (previously 5) has been removed from the controller. This means *all* files in a PR will now be processed. This is a critical regression that can lead to: 1. **Resource Exhaustion/Denial of Service:** Processing hundreds or thousands of files can overwhelm the system. 2. **LLM Input Size Management:** The combined content of many files will likely exceed the LLM's context window, leading to truncated input, poor review quality, or API errors. 3. **Higher Operational Costs & Latency:** More files mean significantly increased token usage and longer processing times. Reintroduce a configurable `maxFiles` limit at the controller level to prevent excessive data fetching from GitHub and manage LLM input size effectively."
-        },
-        {
-            "file": "src/code-review/langgraph/node/input-guard.node.ts",
-            "issue": "Critical: Removal of `maxFiles` limit in `inputGuardNode`.",
-            "severity": "high",
-            "suggestion": "Similar to the controller, the `inputGuardNode` also removes its `maxFiles` limit. This eliminates the last line of defense for limiting the number of files passed to the LLMs. This exacerbates the resource management and LLM input size issues. The `inputGuardNode` should enforce a file limit, even if the controller also has one, to act as a final safeguard."
-        },
-        {
-            "file": "src/code-review/langgraph/gemini.factory.ts",
-            "issue": "High: LLM model name `gemini-2.5-flash` is likely a typo or non-existent.",
-            "severity": "high",
-            "suggestion": "The default LLM model has been changed from `gemini-1.5-flash` to `gemini-2.5-flash`. As of current knowledge, `gemini-2.5-flash` is not a valid or recognized Gemini model name. This is likely a typo. If it's intended to be `gemini-1.5-pro`, it represents a significant increase in operational costs and latency. If it's a non-existent model, it will cause runtime errors. Clarify and correct the LLM model name. If `gemini-1.5-pro` is intended, explicitly acknowledge the increased cost and latency implications."
-        },
-        {
-            "file": "src/code-review/langgraph/graph.ts",
-            "issue": "Medium: Increased LLM calls and higher operational costs due to parallel domain reviews.",
-            "severity": "medium",
-            "suggestion": "The new graph introduces three additional LLM calls (`qualityReview`, `securityReview`, `performanceReview`) that run in parallel, in addition to the original `reviewer` (bug detection) call. While parallel execution can reduce wall-clock latency, it significantly increases the total number of LLM invocations and token usage, leading to higher operational costs. Document the expected increase in operational costs and token usage. Consider strategies to manage this, such as conditional execution of domain reviewers based on PR characteristics or user preferences."
-        },
-        {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "Medium: Hardcoded domain list in `assembler.node.ts`.",
-            "severity": "medium",
-            "suggestion": "The `domains` array (`['quality', 'security', 'performance', 'bugDetection']`) is hardcoded. This makes the system brittle and difficult to extend or modify if new domain reviewers are added or existing ones are changed. Centralize the definition of domain keys, perhaps in `state.ts` or a dedicated configuration file, and dynamically derive the list in nodes that need it."
-        },
-        {
-            "file": "src/code-review/langgraph/node/join.node.ts",
-            "issue": "Medium: Implicit hardcoded domain list in `join.node.ts`.",
-            "severity": "medium",
-            "suggestion": "The `joinNode` implicitly relies on specific domain keys (`quality`, `security`, `performance`) being present in `state.domainReports`. Similar to the `assembler.node.ts` issue, this makes the node brittle to changes in the domain review structure. Consider using a more dynamic approach to iterate over available domain reports if possible, or centralize domain key definitions."
-        },
-        {
-            "file": "src/code-review/dto/analyze-pr.dto.ts",
-            "issue": "Low: Redundant `maxFiles` field in `AnalyzePrDto`.",
-            "severity": "low",
-            "suggestion": "The `maxFiles` field is still present in `AnalyzePrDto` but is no longer used by the `CodeReviewController` or `inputGuardNode`. This creates API inconsistency and potential confusion. Remove the `maxFiles` field from `AnalyzePrDto` to maintain API consistency and clarity, or re-purpose it if a file limit is reintroduced."
-        },
-        {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "Low: Breaking change in `finalReport` structure.",
-            "severity": "low",
-            "suggestion": "The structure of the `finalReport` has changed significantly, introducing `overallSummary`, `domainReports`, `allFindings`, and `counts`, while the original `summary` and `findings` fields are deprecated or replaced. This is a breaking change for any client consuming the `finalReport` directly. Clearly communicate this API change to consumers and ensure proper versioning or migration paths are in place if this is a public API."
-        },
-        {
-            "file": "src/code-review/langgraph/node/assembler.node.ts",
-            "issue": "Low: Deduplication logic limitation for findings.",
-            "severity": "low",
-            "suggestion": "The finding deduplication logic uses `file::issue` as a key. While effective for exact duplicates, it will not deduplicate semantically similar issues that have slightly different `issue` descriptions (e.g., 'Missing null check' vs 'Null pointer risk'). Also, if the same issue is found with different severities or suggestions, the first one encountered is kept. Document this behavior. For future enhancements, consider more advanced semantic deduplication if this becomes a significant problem."
+            "suggestion": "Correct the comparison operator from `=` to `===` in the `if` statement: `if (items[i] === items[j] && i !== j)`. Additionally, consider optimizing the algorithm for finding duplicates (e.g., using a `Set` or hash map) to improve performance from O(n^2) to O(n)."
         }
     ],
     "counts": {
         "severity": {
-            "low": 8,
-            "medium": 8,
-            "high": 13
+            "low": 0,
+            "medium": 1,
+            "high": 19
         },
         "domain": {
-            "quality": 6,
-            "security": 5,
-            "performance": 9,
-            "bugDetection": 9
+            "quality": 8,
+            "security": 8,
+            "performance": 2,
+            "bugDetection": 8
         }
     },
     "extraPromptApplied": "",
-    "bugDetectionPromptAddendum": "Double-check these weak areas carefully: API consistency (redundant DTO field), LLM input size management, Finding deduplication logic, Hardcoded domain list, Prompt Injection, Resource Exhaustion / Denial of Service, Sensitive Data Handling, Algorithmic complexity regression (file processing), Excessive LLM calls and token usage, Increased overall latency, Higher operational costs (LLM API), Increased memory consumption."
+    "bugDetectionPromptAddendum": "Double-check these weak areas carefully: Security, Correctness, Performance, Error Handling, Maintainability, authentication/authorization issues, injection risks (SQL), secrets leakage, unsafe redirects, insecure defaults and missing validation, N+1 Query Patterns, Algorithmic Complexity Regressions.",
+    "relatedContextCount": 4,
+    "relatedContextPaths": [
+        "src/app.service.ts",
+        "src/app.service.ts",
+        "src/auth/auth.controller.ts",
+        "src/auth/auth.controller.ts"
+    ]
 }
 
 ---
