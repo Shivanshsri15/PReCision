@@ -33,6 +33,8 @@ export interface Finding {
   issue: string;
   severity: 'low' | 'medium' | 'high';
   suggestion?: string;
+  /** New-file line number of the changed line the defect is on. */
+  line?: number;
 }
 
 export type DomainKey = 'quality' | 'security' | 'performance' | 'bugDetection';

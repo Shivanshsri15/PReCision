@@ -91,6 +91,7 @@ The output is structured, actionable, and context-aware — not noise.
 | `POST` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/webhook` | JWT | Register a GitHub push webhook (`{ "url": "https://…/api/v1/github/webhook" }`) |
 
 ---
+| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport`. Add `?postComments=true` to also post the findings to the PR as a GitHub review (inline comments on diff lines) |
 
 ## Architecture Overview
 
@@ -326,11 +327,11 @@ POST /code-review/:owner/:repo/:prNumber/analyze
                                 ▼
                           finalReport JSON
                   {
-                    domainReports: { quality, security, performance, bugDetection },
-                    allFindings: [...],        // merged + deduplicated + capped
-                    counts: {...},
-                    overallSummary: string,
-                    relatedContextCount, relatedContextPaths
+                    perDomain: { quality, security, performance, bugDetection },
+                    findings: [...],           // all domain findings, sorted by severity
+                    severityCounts: {...},
+                    domainCounts: {...},
+                    overallSummary: string
                   }
 ```
 

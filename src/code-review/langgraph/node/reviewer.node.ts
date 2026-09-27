@@ -1,7 +1,6 @@
-import type { DomainReport, GraphState } from '../state.js';
+import { PARALLEL_DOMAIN_KEYS, type DomainReport, type GraphState } from '../state.js';
 import { createGemini } from '../gemini.factory.js';
 import {
-  SHARED_REVIEW_RULES,
   buildDomainReport,
   buildFilesPromptSection,
   buildRelatedContextBlock,
@@ -9,8 +8,25 @@ import {
   logDomainComplete,
   parseStrictJson,
 } from './domain-review.util.js';
+import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 const LOG_PREFIX = '[code-review]';
+
+export function buildAlreadyReportedBlock(state: GraphState): string {
+  const lines = PARALLEL_DOMAIN_KEYS.flatMap(
+    (domain) => state.domainReports?.[domain]?.findings ?? [],
+  ).map((f) => `- ${f.file}${f.line ? `:${f.line}` : ''} ${f.issue}`);
+
+  if (!lines.length) {
+    return '';
+  }
+
+  return `ALREADY REPORTED by other reviewers (do not repeat these, even in different words):
+${Array.from(new Set(lines)).join('\n')}
+
+Report only NEW correctness bugs not covered above. Return an empty findings array if there are none.
+`;
+}
 
 /**
  * Bug detection pass — runs after parallel domain reviews and joinNode shaping.
@@ -32,13 +48,15 @@ export const bugDetectionReviewerNode = async (
   const filesText = buildFilesPromptSection(state);
   const relatedContext = buildRelatedContextBlock(state);
   const addendum = state.bugDetectionPromptAddendum?.trim();
+  const alreadyReported = buildAlreadyReportedBlock(state);
 
   const prompt = `
 You are a senior software engineer doing BUG DETECTION in a PR review.
 
 Goal: find correctness bugs, edge-case failures, hidden regressions, and logic mistakes.
+Security, performance, and style issues are reviewed by other reviewers; do not report them.
 
-${addendum ? `EXTRA FOCUS (derived from other domain reviews):\n${addendum}\n` : ''}
+${addendum ? `EXTRA FOCUS:\n${addendum}\n` : ''}
 Analyze the following changes and return STRICT JSON only (no markdown/backticks/explanations).
 
 PR TITLE:
@@ -50,31 +68,23 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
-${SHARED_REVIEW_RULES}
-Return ONLY this JSON structure:
-{
-  "rating": 1,
-  "summary": "string",
-  "weakAreas": ["string"],
-  "findings": [
-    {
-      "file": "string",
-      "issue": "string",
-      "severity": "low | medium | high",
-      "suggestion": "string"
-    }
-  ]
-}
+${alreadyReported}
+${buildReviewRules('bugDetection')}
+${FINDING_SCHEMA}
 `;
 
   const response = await model.invoke(prompt);
   const raw = extractModelTextContent(response);
-  const parsed = parseStrictJson(raw, {
-    rating: 3,
-    summary: 'Bug detection review completed.',
-    weakAreas: [],
-    findings: [],
-  });
+  const parsed = parseStrictJson(
+    raw,
+    {
+      rating: 3,
+      summary: 'Bug detection review completed.',
+      weakAreas: [],
+      findings: [],
+    },
+    'bugDetection',
+  );
 
   const report: DomainReport = buildDomainReport({
     domain: 'bugDetection',

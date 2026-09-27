@@ -1,7 +1,6 @@
 import { createGemini } from '../gemini.factory.js';
 import type { DomainReport, GraphState } from '../state.js';
 import {
-  SHARED_REVIEW_RULES,
   buildDomainReport,
   buildFilesPromptSection,
   buildRelatedContextBlock,
@@ -9,6 +8,7 @@ import {
   logDomainComplete,
   parseStrictJson,
 } from './domain-review.util.js';
+import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 export const qualityReviewerNode = async (
   state: GraphState,
@@ -22,9 +22,10 @@ You are a senior software engineer doing a PR review focused on CODE QUALITY.
 
 Focus areas:
 - readability, naming, maintainability
-- error handling and edge cases
-- correctness risks and confusing logic
+- dead code and duplicated logic
 - API design clarity and consistency
+
+Security, performance, and correctness bugs are reviewed by other reviewers; do not report them.
 
 Analyze the following changes and return STRICT JSON only (no markdown/backticks/explanations).
 
@@ -37,31 +38,22 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
-${SHARED_REVIEW_RULES}
-Return ONLY this JSON structure:
-{
-  "rating": 1,
-  "summary": "string",
-  "weakAreas": ["string"],
-  "findings": [
-    {
-      "file": "string",
-      "issue": "string",
-      "severity": "low | medium | high",
-      "suggestion": "string"
-    }
-  ]
-}
+${buildReviewRules('quality')}
+${FINDING_SCHEMA}
 `;
 
   const response = await model.invoke(prompt);
   const raw = extractModelTextContent(response);
-  const parsed = parseStrictJson(raw, {
-    rating: 3,
-    summary: 'Code quality review completed.',
-    weakAreas: [],
-    findings: [],
-  });
+  const parsed = parseStrictJson(
+    raw,
+    {
+      rating: 3,
+      summary: 'Code quality review completed.',
+      weakAreas: [],
+      findings: [],
+    },
+    'quality',
+  );
 
   const report: DomainReport = buildDomainReport({
     domain: 'quality',

@@ -21,7 +21,7 @@ export const envValidationSchema = Joi.object({
   GITHUB_OAUTH_SCOPES: Joi.string()
     .default('read:user user:email repo pull_request:read'),
   GEMINI_API_KEY: Joi.string().required(),
-  GEMINI_MODEL: Joi.string().default('gemini-2.0-flash'),
+  GEMINI_MODEL: Joi.string().default('gemini-2.5-flash'),
   EMBEDDING_MODEL: Joi.string().default('gemini-embedding-001'),
   EMBEDDING_DIMS: Joi.number().integer().default(768),
   VECTOR_INDEX_NAME: Joi.string().default('repo_vectors_index'),

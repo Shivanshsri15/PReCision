@@ -1,7 +1,6 @@
 import { createGemini } from '../gemini.factory.js';
 import type { DomainReport, GraphState } from '../state.js';
 import {
-  SHARED_REVIEW_RULES,
   buildDomainReport,
   buildFilesPromptSection,
   buildRelatedContextBlock,
@@ -9,6 +8,7 @@ import {
   logDomainComplete,
   parseStrictJson,
 } from './domain-review.util.js';
+import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 export const performanceReviewerNode = async (
   state: GraphState,
@@ -38,31 +38,22 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
-${SHARED_REVIEW_RULES}
-Return ONLY this JSON structure:
-{
-  "rating": 1,
-  "summary": "string",
-  "weakAreas": ["string"],
-  "findings": [
-    {
-      "file": "string",
-      "issue": "string",
-      "severity": "low | medium | high",
-      "suggestion": "string"
-    }
-  ]
-}
+${buildReviewRules('performance')}
+${FINDING_SCHEMA}
 `;
 
   const response = await model.invoke(prompt);
   const raw = extractModelTextContent(response);
-  const parsed = parseStrictJson(raw, {
-    rating: 3,
-    summary: 'Performance review completed.',
-    weakAreas: [],
-    findings: [],
-  });
+  const parsed = parseStrictJson(
+    raw,
+    {
+      rating: 3,
+      summary: 'Performance review completed.',
+      weakAreas: [],
+      findings: [],
+    },
+    'performance',
+  );
 
   const report: DomainReport = buildDomainReport({
     domain: 'performance',
