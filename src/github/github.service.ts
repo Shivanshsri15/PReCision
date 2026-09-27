@@ -141,6 +141,37 @@ export class GithubService {
     );
   }
 
+  /**
+   * Posts a single COMMENT review. GitHub rejects the whole review (422) if any
+   * inline comment targets a line outside the diff, so callers must only pass
+   * lines that appear in the patch.
+   */
+  async createPullRequestReview(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    review: {
+      commitId: string;
+      body: string;
+      comments: Array<{ path: string; line: number; body: string }>;
+    },
+  ) {
+    return this.githubRequest<{ id: number; html_url: string }>(
+      user.userId,
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          commit_id: review.commitId,
+          event: 'COMMENT',
+          body: review.body,
+          comments: review.comments.map((c) => ({ ...c, side: 'RIGHT' })),
+        }),
+      },
+    );
+  }
+
   async listCommits(
     user: AuthenticatedUser,
     owner: string,
