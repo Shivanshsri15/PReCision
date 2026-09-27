@@ -76,7 +76,7 @@ The output is structured, actionable, and context-aware — not noise.
 
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
-| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport` |
+| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport`. Add `?postComments=true` to also post the findings to the PR as a GitHub review (inline comments on diff lines) |
 
 ## Architecture Overview
 
@@ -278,7 +278,7 @@ POST /code-review/:owner/:repo/:prNumber/analyze
                           finalReport JSON
                   {
                     perDomain: { quality, security, performance, bugDetection },
-                    allFindings: [...],        // merged + deduplicated
+                    findings: [...],           // all domain findings, sorted by severity
                     severityCounts: {...},
                     domainCounts: {...},
                     overallSummary: string

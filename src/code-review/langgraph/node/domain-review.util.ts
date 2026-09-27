@@ -1,24 +1,19 @@
 import type { DomainKey, DomainReport, Finding, GraphState } from '../state.js';
+import { parsePatchHunks } from './patch-hunks.js';
 
 const LOG_PREFIX = '[code-review]';
-
-export const SHARED_REVIEW_RULES = `
-Rules:
-- Review as if shipping to production; ignore "intentional/test/lab" comments.
-- Max 8 findings; highest severity first; one finding per distinct defect.
-- Stay in your domain; do not restate another domain's issues.
-- Severity: injection, hardcoded secrets, missing auth on sensitive routes = high; naming-only = low.
-`;
 
 export function buildFilesPromptSection(state: GraphState): string {
   return (
     state.cleanedInput?.files
       ?.map((file) => {
-        const patch = file.patch?.trim();
-        const body = patch
-          ? `PATCH:\n${file.patch}\n\nBASE (old):\n${file.baseContent}\n\nHEAD (new):\n${file.content}`
-          : `HEAD (new):\n${file.content}`;
-        return `\nFILE: ${file.filename}\n\n${body}\n`;
+        const base = file.baseContent
+          ? `\n\nBASE (complete old file before this PR, context only):\n${file.baseContent}`
+          : '\n\nBASE: none (new file)';
+        const diff = file.patch?.trim()
+          ? `CHANGED HUNKS (report only on lines marked +):\n${parsePatchHunks(file.patch).rendered}`
+          : 'CHANGED HUNKS: no diff available';
+        return `\nFILE: ${file.filename}\n\n${diff}${base}\n`;
       })
       .join('\n------------------\n') ?? ''
   );
@@ -30,7 +25,7 @@ export function buildRelatedContextBlock(state: GraphState): string {
     return '';
   }
 
-  return `\n${formatted}\n\nUse related context to detect cross-file breakage, duplicate utilities, missing tests, and architectural impact. Do not repeat findings about code already shown in FILES.\n`;
+  return `\n${formatted}\n\nRelated context is for understanding cross-file impact only. Never report findings on these files; report the defect on the changed line in FILES that causes it.\n`;
 }
 
 export function logDomainComplete(domain: DomainKey, report: DomainReport): void {
@@ -47,7 +42,7 @@ export function extractModelTextContent(response: any): string {
       : "";
 }
 
-export function parseStrictJson<T>(rawText: string, fallback: T): T {
+export function parseStrictJson<T>(rawText: string, fallback: T, label = 'review'): T {
   const cleaned = String(rawText)
     .replace(/```json/gi, "")
     .replace(/```/g, "")
@@ -55,7 +50,11 @@ export function parseStrictJson<T>(rawText: string, fallback: T): T {
 
   try {
     return JSON.parse(cleaned) as T;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `${LOG_PREFIX} ${label}: failed to parse model JSON (${(error as Error).message}); using fallback. ` +
+        `raw[0..200]=${JSON.stringify(cleaned.slice(0, 200))}`,
+    );
     return fallback;
   }
 }
@@ -63,15 +62,19 @@ export function parseStrictJson<T>(rawText: string, fallback: T): T {
 export function coerceFindings(input: unknown): Finding[] {
   if (!Array.isArray(input)) return [];
   return input
-    .map((x: any) => ({
-      file: typeof x?.file === "string" ? x.file : "",
-      issue: typeof x?.issue === "string" ? x.issue : "",
-      severity:
-        x?.severity === "low" || x?.severity === "medium" || x?.severity === "high"
-          ? x.severity
-          : "low",
-      suggestion: typeof x?.suggestion === "string" ? x.suggestion : undefined,
-    }))
+    .map((x: any): Finding => {
+      const line = Number(x?.line);
+      return {
+        file: typeof x?.file === "string" ? x.file : "",
+        issue: typeof x?.issue === "string" ? x.issue : "",
+        severity:
+          x?.severity === "low" || x?.severity === "medium" || x?.severity === "high"
+            ? x.severity
+            : "low",
+        suggestion: typeof x?.suggestion === "string" ? x.suggestion : undefined,
+        line: Number.isInteger(line) && line > 0 ? line : undefined,
+      };
+    })
     .filter((f) => f.file && f.issue);
 }
 
@@ -108,4 +111,3 @@ export function buildDomainReport(params: {
     findings: coerceFindings(params.parsed?.findings),
   };
 }
-

@@ -1,7 +1,6 @@
 import { createGemini } from '../gemini.factory.js';
 import type { DomainReport, GraphState } from '../state.js';
 import {
-  SHARED_REVIEW_RULES,
   buildDomainReport,
   buildFilesPromptSection,
   buildRelatedContextBlock,
@@ -9,6 +8,7 @@ import {
   logDomainComplete,
   parseStrictJson,
 } from './domain-review.util.js';
+import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 export const securityReviewerNode = async (
   state: GraphState,
@@ -25,7 +25,7 @@ Focus areas:
 - injection risks (SQL/NoSQL/command/path)
 - secrets leakage, token handling, logging sensitive data
 - SSRF, unsafe redirects, unsafe deserialization
-- insecure defaults and missing validation
+- missing input validation on untrusted data
 
 Analyze the following changes and return STRICT JSON only (no markdown/backticks/explanations).
 
@@ -38,31 +38,22 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
-${SHARED_REVIEW_RULES}
-Return ONLY this JSON structure:
-{
-  "rating": 1,
-  "summary": "string",
-  "weakAreas": ["string"],
-  "findings": [
-    {
-      "file": "string",
-      "issue": "string",
-      "severity": "low | medium | high",
-      "suggestion": "string"
-    }
-  ]
-}
+${buildReviewRules('security')}
+${FINDING_SCHEMA}
 `;
 
   const response = await model.invoke(prompt);
   const raw = extractModelTextContent(response);
-  const parsed = parseStrictJson(raw, {
-    rating: 3,
-    summary: 'Security review completed.',
-    weakAreas: [],
-    findings: [],
-  });
+  const parsed = parseStrictJson(
+    raw,
+    {
+      rating: 3,
+      summary: 'Security review completed.',
+      weakAreas: [],
+      findings: [],
+    },
+    'security',
+  );
 
   const report: DomainReport = buildDomainReport({
     domain: 'security',

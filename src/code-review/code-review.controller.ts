@@ -2,15 +2,17 @@ import {
   Controller,
   Get,
   Param,
+  ParseBoolPipe,
   ParseIntPipe,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
 import { GithubService } from '../github/github.service.js';
-import type { PRAnalysisPayload, PRFile } from './langgraph/state.js';
+import type { Finding, PRAnalysisPayload, PRFile } from './langgraph/state.js';
 import { CcodeReviewService } from './code-review.service.js';
 
 const LOG_PREFIX = '[code-review]';
@@ -52,9 +54,12 @@ export class CodeReviewController {
     @Param('owner') owner: string,
     @Param('repo') repo: string,
     @Param('pullNumber', ParseIntPipe) pullNumber: number,
+    @Query('postComments', new ParseBoolPipe({ optional: true }))
+    postComments?: boolean,
   ) {
     console.log(
-      `${LOG_PREFIX} analyze request: ${owner}/${repo} PR #${pullNumber}`,
+      `${LOG_PREFIX} analyze request: ${owner}/${repo} PR #${pullNumber} ` +
+        `postComments=${postComments ? 'yes' : 'no'}`,
     );
 
     const pr = (await this.githubService.getPullRequest(
@@ -146,7 +151,19 @@ export class CodeReviewController {
       files,
     };
 
-    return this.codeReviewService.analyzePR(req.user.userId, payload);
+    const result = await this.codeReviewService.analyzePR(req.user.userId, payload);
+    if (!postComments) {
+      return result;
+    }
+
+    const report = result as Record<string, unknown>;
+    const review = await this.codeReviewService.postReviewComments(
+      req.user,
+      payload,
+      Array.isArray(report.findings) ? (report.findings as Finding[]) : [],
+      typeof report.overallSummary === 'string' ? report.overallSummary : '',
+    );
+    return { ...result, review };
   }
 
   @UseGuards(JwtAuthGuard)
