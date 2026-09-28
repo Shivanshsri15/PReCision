@@ -47,4 +47,7 @@ export type GithubPushWebhookPayload = {
     modified?: string[];
     removed?: string[];
   }>;
+  head_commit?: { id?: string; message?: string; url?: string } | null;
+  pusher?: { name?: string };
+  compare?: string;
 };

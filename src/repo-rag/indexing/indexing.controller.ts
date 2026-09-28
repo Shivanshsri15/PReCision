@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Post, Request, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../../auth/types/authenticated-user.type.js';
 import { IndexingService } from './indexing.service.js';
@@ -14,7 +21,10 @@ export class IndexingController {
     return this.indexingService.listForUser(req.user.userId);
   }
 
-  /** Registers the repo push webhook (GITHUB_WEBHOOK_URL) first, then indexes the branch. */
+  /**
+   * Starts indexing the branch in the background (registering the push webhook
+   * first) and returns right away; progress arrives on `/api/v1/events/stream`.
+   */
   @UseGuards(JwtAuthGuard)
   @Post('/repositories/:owner/:repo/branches/:branch/index')
   async indexRepository(
@@ -23,7 +33,7 @@ export class IndexingController {
     @Param('repo') repo: string,
     @Param('branch') branch: string,
   ) {
-    return this.indexingService.runFullIndex(req.user, owner, repo, branch);
+    return this.indexingService.startFullIndex(req.user, owner, repo, branch);
   }
 
   @UseGuards(JwtAuthGuard)

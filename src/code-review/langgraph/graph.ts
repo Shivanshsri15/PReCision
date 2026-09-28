@@ -12,11 +12,13 @@ import { securityReviewerNode } from './node/security-reviewer.node.js';
 
 /**
  * Pipeline:
- *   inputGuard → retriever (RAG) → [qualityReview | securityReview | performanceReview]
- *   → joinNode → bugDetection → assembler
+ *   inputGuard → retriever (RAG)
+ *   → [qualityReview | securityReview | performanceReview | bugDetection]
+ *   → joinNode → assembler
  *
- * The retriever node must run before domain reviewers so `relatedContextFormatted`
- * is available in every LLM prompt.
+ * The retriever node must run before the reviewers so `relatedContextFormatted`
+ * is available in every LLM prompt. All four reviewers run in parallel; the
+ * assembler drops bug findings that duplicate another reviewer's.
  */
 export const buildGraph = (retrieverService: RetrieverService) => {
   const retrieverNode = createRetrieverNode(retrieverService);
@@ -35,11 +37,12 @@ export const buildGraph = (retrieverService: RetrieverService) => {
     .addEdge('retriever', 'qualityReview')
     .addEdge('retriever', 'securityReview')
     .addEdge('retriever', 'performanceReview')
+    .addEdge('retriever', 'bugDetection')
     .addEdge('qualityReview', 'joinNode')
     .addEdge('securityReview', 'joinNode')
     .addEdge('performanceReview', 'joinNode')
-    .addEdge('joinNode', 'bugDetection')
-    .addEdge('bugDetection', 'assembler')
+    .addEdge('bugDetection', 'joinNode')
+    .addEdge('joinNode', 'assembler')
     .addEdge('assembler', END);
 
   return graph.compile();

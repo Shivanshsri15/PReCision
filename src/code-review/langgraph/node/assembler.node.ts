@@ -14,9 +14,32 @@ const SEVERITY_RANK: Record<Finding['severity'], number> = {
   low: 1,
 };
 
-export const assemblerNode = async (state: GraphState): Promise<Partial<GraphState>> => {
+/** Bug detection runs alongside the others, so drop its findings on a line (±1) another reviewer already flagged. */
+function withoutDuplicateBugs(
+  reports: Partial<Record<DomainKey, DomainReport>>,
+): Partial<Record<DomainKey, DomainReport>> {
+  const bug = reports.bugDetection;
+  if (!bug) return reports;
+
+  const flagged = DOMAIN_KEYS.filter(
+    (domain) => domain !== 'bugDetection',
+  ).flatMap((domain) => reports[domain]?.findings ?? []);
+  const isDuplicate = (finding: Finding) =>
+    flagged.some(
+      (other) =>
+        other.file === finding.file &&
+        (finding.line === undefined || other.line === undefined
+          ? other.issue.toLowerCase() === finding.issue.toLowerCase()
+          : Math.abs(other.line - finding.line) <= 1),
+    );
+
+  const findings = bug.findings.filter((finding) => !isDuplicate(finding));
+  return { ...reports, bugDetection: { ...bug, findings } };
+}
+
+export const assemblerNode = (state: GraphState): Partial<GraphState> => {
   const domainReports = state.domainReports ?? {};
-  const reports: Partial<Record<DomainKey, DomainReport>> = {};
+  let reports: Partial<Record<DomainKey, DomainReport>> = {};
 
   for (const domain of DOMAIN_KEYS) {
     const report = domainReports[domain];
@@ -24,9 +47,13 @@ export const assemblerNode = async (state: GraphState): Promise<Partial<GraphSta
       reports[domain] = report;
     }
   }
+  reports = withoutDuplicateBugs(reports);
 
   const findings: Finding[] = DOMAIN_KEYS.flatMap((domain) =>
-    (reports[domain]?.findings ?? []).map((finding) => ({ ...finding, domain })),
+    (reports[domain]?.findings ?? []).map((finding) => ({
+      ...finding,
+      domain,
+    })),
   ).sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
 
   const severityCounts = findings.reduce(

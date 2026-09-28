@@ -220,6 +220,7 @@ export class CcodeReviewService implements OnModuleInit {
     userId: string,
     payload: PRAnalysisPayload,
     onStep?: (node: string) => void,
+    options: { onRunCreated?: (runId: string) => void; signal?: AbortSignal } = {},
   ) {
     const repoId = `${payload.owner}/${payload.repo}`;
     console.log(
@@ -265,6 +266,7 @@ export class CcodeReviewService implements OnModuleInit {
       status: 'running',
       rerunOf: rerunOf ? String(rerunOf._id) : undefined,
     });
+    options.onRunCreated?.(String(run._id));
 
     try {
       console.log(
@@ -282,7 +284,7 @@ export class CcodeReviewService implements OnModuleInit {
           relatedContext: cachedContext?.chunks,
           relatedContextFormatted: cachedContext?.formatted,
         },
-        { configurable: { geminiApiKey }, streamMode: 'updates' },
+        { configurable: { geminiApiKey }, streamMode: 'updates', signal: options.signal },
       );
 
       let assembledReport: Record<string, unknown> | undefined;
@@ -339,7 +341,11 @@ export class CcodeReviewService implements OnModuleInit {
         ...finalReport,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Analysis failed';
+      const message = options.signal?.aborted
+        ? 'Cancelled by user.'
+        : error instanceof Error
+          ? error.message
+          : 'Analysis failed';
       console.error(
         `${LOG_PREFIX} analyze failed: ${repoId} PR #${payload.prId} runId=${run._id} — ${message}`,
       );
@@ -347,7 +353,7 @@ export class CcodeReviewService implements OnModuleInit {
         status: 'failed',
         error: message,
       });
-      throw error;
+      throw options.signal?.aborted ? new Error(message) : error;
     }
   }
 

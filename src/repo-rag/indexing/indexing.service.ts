@@ -1,9 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { GeminiKeyService } from '../../auth/gemini-key.service.js';
 import type { AuthenticatedUser } from '../../auth/types/authenticated-user.type.js';
+import { EventsService } from '../../events/events.service.js';
 import type { GithubPushWebhookPayload } from '../../github/github.types.js';
 import { GithubService } from '../../github/github.service.js';
 import { chunkFile } from '../chunking/chunk-file.js';
@@ -16,9 +21,33 @@ import {
 import { VectorStoreService } from '../vector-store/vector-store.service.js';
 
 const LOG_PREFIX = '[repo-index]';
+/** Recent files kept per job so a reconnecting client can rebuild the live list. */
+const MAX_TRACKED_FILES = 300;
+
+export type IndexedFileStatus = 'indexed' | 'skipped' | 'failed' | 'removed';
+
+export interface IndexedFile {
+  path: string;
+  status: IndexedFileStatus;
+  chunks?: number;
+}
+
+interface IndexProgress {
+  userId: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  kind: 'full' | 'incremental';
+  total: number;
+  processed: number;
+  startedAt: string;
+  files: IndexedFile[];
+}
 
 @Injectable()
-export class IndexingService {
+export class IndexingService implements OnModuleInit {
+  private readonly progress = new Map<string, IndexProgress>();
+
   constructor(
     @InjectModel(RepoIndex.name)
     private readonly repoIndexModel: Model<RepoIndexDocument>,
@@ -27,7 +56,31 @@ export class IndexingService {
     private readonly vectorStore: VectorStoreService,
     private readonly config: ConfigService,
     private readonly geminiKeyService: GeminiKeyService,
+    private readonly events: EventsService,
   ) {}
+
+  /** Indexing runs in-process, so any record still `indexing` at boot was cut off by a restart. */
+  async onModuleInit() {
+    this.events.registerSnapshot('indexing', (userId) =>
+      [...this.progress.values()]
+        .filter((job) => job.userId === userId)
+        .map((job) => ({ ...this.summary(job), files: job.files })),
+    );
+
+    const { modifiedCount } = await this.repoIndexModel.updateMany(
+      { status: 'indexing' },
+      {
+        status: 'failed',
+        lastError:
+          'Interrupted: the server restarted while indexing. Re-index to continue.',
+      },
+    );
+    if (modifiedCount) {
+      console.log(
+        `${LOG_PREFIX} marked ${modifiedCount} interrupted index job(s) as failed`,
+      );
+    }
+  }
 
   async listForUser(userId: string) {
     return this.repoIndexModel
@@ -64,37 +117,85 @@ export class IndexingService {
     };
   }
 
-  async runFullIndex(
+  /**
+   * Starts a full index in the background and returns immediately. Progress
+   * is published on the user's event stream (`index.*` events).
+   */
+  async startFullIndex(
     user: AuthenticatedUser,
     owner: string,
     repo: string,
     branch: string,
   ) {
-    return this.runFullIndexForUserId(user.userId, owner, repo, branch);
-  }
-
-  async runFullIndexForUserId(
-    userId: string,
-    owner: string,
-    repo: string,
-    branch: string,
-  ) {
-    const repoId = `${owner}/${repo}`;
-    const maxFiles = this.config.get<number>('INDEX_MAX_FILES') ?? 1000;
-
-    let record = await this.repoIndexModel.findOneAndUpdate(
-      { owner, repo, branch },
-      {
+    const active = this.progress.get(this.key(owner, repo, branch));
+    const other = [...this.progress.values()].find(
+      (job) =>
+        job !== active && job.userId === user.userId && job.kind === 'full',
+    );
+    if (other) {
+      throw new ConflictException(
+        `${other.owner}/${other.repo}@${other.branch} is still being indexed. Wait for it to finish before indexing another repository.`,
+      );
+    }
+    if (active) {
+      return {
         owner,
         repo,
         branch,
-        repoId,
         status: 'indexing',
-        indexedByUserId: userId,
-        lastError: undefined,
-      },
-      { upsert: true, new: true },
+        alreadyRunning: true,
+        startedAt: active.startedAt,
+      };
+    }
+
+    const progress = this.beginProgress(
+      user.userId,
+      owner,
+      repo,
+      branch,
+      'full',
+    )!;
+    let record: RepoIndexDocument;
+    try {
+      record = await this.repoIndexModel.findOneAndUpdate(
+        { owner, repo, branch },
+        {
+          owner,
+          repo,
+          branch,
+          repoId: `${owner}/${repo}`,
+          status: 'indexing',
+          indexedByUserId: user.userId,
+          lastError: undefined,
+        },
+        { upsert: true, new: true },
+      );
+    } catch (error) {
+      this.failProgress(progress, error);
+      throw error;
+    }
+
+    void this.runFullIndex(user.userId, record, progress).catch(
+      () => undefined,
     );
+    return {
+      owner,
+      repo,
+      branch,
+      status: 'indexing',
+      alreadyRunning: false,
+      startedAt: progress.startedAt,
+    };
+  }
+
+  private async runFullIndex(
+    userId: string,
+    record: RepoIndexDocument,
+    progress: IndexProgress,
+  ) {
+    const { owner, repo, branch } = record;
+    const repoId = `${owner}/${repo}`;
+    const maxFiles = this.config.get<number>('INDEX_MAX_FILES') ?? 1000;
 
     try {
       const geminiApiKey = await this.geminiKeyService.resolve(userId);
@@ -134,56 +235,43 @@ export class IndexingService {
         `${LOG_PREFIX} eligible blobs: ${blobs.length}, indexing: ${filesToIndex.length}` +
           (blobs.length > maxFiles ? ` (capped at ${maxFiles})` : ''),
       );
-      if (filesToIndex.length > 0) {
-        const samplePaths = filesToIndex.slice(0, 15).map((e) => e.path);
-        console.log(`${LOG_PREFIX} sample paths:`, samplePaths);
-      }
+      this.setTotal(progress, filesToIndex.length);
 
       let fileCount = 0;
       let chunkCount = 0;
-      let skippedEmpty = 0;
-      let skippedNoChunks = 0;
+      let skipped = 0;
       let failed = 0;
 
       for (let i = 0; i < filesToIndex.length; i += 10) {
         const batch = filesToIndex.slice(i, i + 10);
-        const batchNum = Math.floor(i / 10) + 1;
-        const totalBatches = Math.ceil(filesToIndex.length / 10);
-        console.log(
-          `${LOG_PREFIX} batch ${batchNum}/${totalBatches}: ${batch.map((e) => e.path).join(', ')}`,
-        );
 
         await Promise.all(
           batch.map(async (entry) => {
             const path = entry.path!;
             const blobSha = entry.sha!;
             try {
-              const filePayload = (await this.githubService.getRepositoryFileForUserId(
-                userId,
-                owner,
-                repo,
-                path,
-                headSha,
-              )) as { content?: string };
+              const filePayload =
+                (await this.githubService.getRepositoryFileForUserId(
+                  userId,
+                  owner,
+                  repo,
+                  path,
+                  headSha,
+                )) as { content?: string };
 
               const content =
-                typeof filePayload.content === 'string' ? filePayload.content : '';
-              if (!content.trim()) {
-                skippedEmpty += 1;
-                console.log(`${LOG_PREFIX} skip (empty): ${path}`);
-                return;
-              }
-
-              const chunks = await chunkFile(path, content);
+                typeof filePayload.content === 'string'
+                  ? filePayload.content
+                  : '';
+              const chunks = content.trim()
+                ? await chunkFile(path, content)
+                : [];
               if (chunks.length === 0) {
-                skippedNoChunks += 1;
-                console.log(`${LOG_PREFIX} skip (no chunks): ${path}`);
+                skipped += 1;
+                this.recordFile(progress, { path, status: 'skipped' });
                 return;
               }
 
-              console.log(
-                `${LOG_PREFIX} embedding ${path} (${chunks.length} chunks, ${content.length} chars)`,
-              );
               const embeddings = await this.embeddingsService.embedBatch(
                 chunks.map((chunk) => chunk.text),
                 geminiApiKey,
@@ -199,14 +287,17 @@ export class IndexingService {
 
               fileCount += 1;
               chunkCount += chunks.length;
-              console.log(
-                `${LOG_PREFIX} indexed: ${path} (${chunks.length} chunks)`,
-              );
+              this.recordFile(progress, {
+                path,
+                status: 'indexed',
+                chunks: chunks.length,
+              });
             } catch (error) {
               failed += 1;
               const message =
                 error instanceof Error ? error.message : String(error);
               console.error(`${LOG_PREFIX} failed: ${path} — ${message}`);
+              this.recordFile(progress, { path, status: 'failed' });
             }
           }),
         );
@@ -215,37 +306,25 @@ export class IndexingService {
       const status = blobs.length > maxFiles ? 'partial' : 'ready';
       console.log(
         `${LOG_PREFIX} full index complete: ${repoId}@${branch} status=${status} ` +
-          `files=${fileCount} chunks=${chunkCount} skippedEmpty=${skippedEmpty} ` +
-          `skippedNoChunks=${skippedNoChunks} failed=${failed}`,
+          `files=${fileCount} chunks=${chunkCount} skipped=${skipped} failed=${failed}`,
       );
-      const updated = await this.repoIndexModel.findByIdAndUpdate(
-        record._id,
-        {
-          status,
-          indexedSha: headSha,
-          fileCount,
-          chunkCount,
-          lastIndexedAt: new Date(),
-        },
-        { new: true },
-      );
-
-      return {
-        owner,
-        repo,
-        branch,
-        status: updated?.status,
-        indexedSha: updated?.indexedSha,
-        fileCount: updated?.fileCount,
-        chunkCount: updated?.chunkCount,
-        lastIndexedAt: updated?.lastIndexedAt,
-        cappedAt: maxFiles,
-        totalEligibleFiles: blobs.length,
-        webhookId: updated?.webhookId,
-        webhookUrl: updated?.webhookUrl,
-      };
+      await this.repoIndexModel.findByIdAndUpdate(record._id, {
+        status,
+        indexedSha: headSha,
+        fileCount,
+        chunkCount,
+        lastIndexedAt: new Date(),
+      });
+      this.completeProgress(progress, {
+        status,
+        fileCount,
+        chunkCount,
+        skipped,
+        failed,
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Indexing failed';
+      const message =
+        error instanceof Error ? error.message : 'Indexing failed';
       console.error(
         `${LOG_PREFIX} full index failed: ${repoId}@${branch} — ${message}`,
       );
@@ -253,6 +332,7 @@ export class IndexingService {
         status: 'failed',
         lastError: message,
       });
+      this.failProgress(progress, error);
       throw error;
     }
   }
@@ -272,6 +352,14 @@ export class IndexingService {
       return { updated: false, reason: 'not-indexed' };
     }
 
+    const progress = this.beginProgress(
+      userId,
+      owner,
+      repo,
+      branch,
+      'incremental',
+    );
+    this.setTotal(progress, changedPaths.length + removedPaths.length);
     await this.repoIndexModel.findByIdAndUpdate(record._id, {
       status: 'indexing',
       lastError: undefined,
@@ -285,8 +373,8 @@ export class IndexingService {
       );
 
       for (const path of removedPaths) {
-        console.log(`${LOG_PREFIX} removing: ${path}`);
         await this.vectorStore.deletePath(repoId, branch, path);
+        this.recordFile(progress, { path, status: 'removed' });
       }
 
       const commitSha =
@@ -297,46 +385,42 @@ export class IndexingService {
           repo,
           branch,
         ));
-      console.log(`${LOG_PREFIX} incremental commit SHA: ${commitSha}`);
 
       let fileCount = record.fileCount ?? 0;
-      let chunkCount = record.chunkCount ?? 0;
       let updated = 0;
       let skipped = 0;
       let failed = 0;
 
       for (const path of changedPaths) {
         if (!shouldIndex(path)) {
-          console.log(`${LOG_PREFIX} skip (not indexable): ${path}`);
           await this.vectorStore.deletePath(repoId, branch, path);
           skipped += 1;
+          this.recordFile(progress, { path, status: 'skipped' });
           continue;
         }
 
         try {
-          const filePayload = (await this.githubService.getRepositoryFileForUserId(
-            userId,
-            owner,
-            repo,
-            path,
-            commitSha,
-          )) as { content?: string; sha?: string };
+          const filePayload =
+            (await this.githubService.getRepositoryFileForUserId(
+              userId,
+              owner,
+              repo,
+              path,
+              commitSha,
+            )) as { content?: string; sha?: string };
 
           const content =
             typeof filePayload.content === 'string' ? filePayload.content : '';
           const blobSha = filePayload.sha ?? commitSha;
 
           if (!content.trim()) {
-            console.log(`${LOG_PREFIX} skip (empty, deleting vectors): ${path}`);
             await this.vectorStore.deletePath(repoId, branch, path);
             skipped += 1;
+            this.recordFile(progress, { path, status: 'skipped' });
             continue;
           }
 
           const chunks = await chunkFile(path, content);
-          console.log(
-            `${LOG_PREFIX} embedding ${path} (${chunks.length} chunks)`,
-          );
           const embeddings = await this.embeddingsService.embedBatch(
             chunks.map((chunk) => chunk.text),
             geminiApiKey,
@@ -351,25 +435,28 @@ export class IndexingService {
           );
 
           fileCount += 1;
-          chunkCount += chunks.length;
           updated += 1;
-          console.log(
-            `${LOG_PREFIX} updated: ${path} (${chunks.length} chunks)`,
-          );
+          this.recordFile(progress, {
+            path,
+            status: 'indexed',
+            chunks: chunks.length,
+          });
         } catch (error) {
           failed += 1;
           const message =
             error instanceof Error ? error.message : String(error);
-          console.error(`${LOG_PREFIX} incremental failed: ${path} — ${message}`);
+          console.error(
+            `${LOG_PREFIX} incremental failed: ${path} — ${message}`,
+          );
           await this.vectorStore.deletePath(repoId, branch, path);
+          this.recordFile(progress, { path, status: 'failed' });
         }
       }
 
-      chunkCount = await this.vectorStore.countChunks(repoId, branch);
+      const chunkCount = await this.vectorStore.countChunks(repoId, branch);
       console.log(
         `${LOG_PREFIX} incremental complete: ${repoId}@${branch} ` +
-          `updated=${updated} skipped=${skipped} failed=${failed} ` +
-          `fileCount=${fileCount} chunkCount=${chunkCount}`,
+          `updated=${updated} skipped=${skipped} failed=${failed} chunkCount=${chunkCount}`,
       );
 
       await this.repoIndexModel.findByIdAndUpdate(record._id, {
@@ -379,8 +466,19 @@ export class IndexingService {
         chunkCount,
         lastIndexedAt: new Date(),
       });
+      this.completeProgress(progress, {
+        status: 'ready',
+        fileCount,
+        chunkCount,
+        skipped,
+        failed,
+      });
 
-      return { updated: true, changedPaths: changedPaths.length, removedPaths: removedPaths.length };
+      return {
+        updated: true,
+        changedPaths: changedPaths.length,
+        removedPaths: removedPaths.length,
+      };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Incremental update failed';
@@ -391,6 +489,7 @@ export class IndexingService {
         status: 'failed',
         lastError: message,
       });
+      this.failProgress(progress, error);
       throw error;
     }
   }
@@ -412,14 +511,17 @@ export class IndexingService {
       return;
     }
 
-    const { hook, webhookUrl: normalizedUrl, created } =
-      await this.githubService.ensurePushWebhook(
-        userId,
-        record.owner,
-        record.repo,
-        webhookUrl,
-        record.webhookId,
-      );
+    const {
+      hook,
+      webhookUrl: normalizedUrl,
+      created,
+    } = await this.githubService.ensurePushWebhook(
+      userId,
+      record.owner,
+      record.repo,
+      webhookUrl,
+      record.webhookId,
+    );
     console.log(
       `${LOG_PREFIX} webhook ${created ? 'created' : 'reused'}: ${record.repoId}@${record.branch} ` +
         `id=${hook.id} url=${normalizedUrl}`,
@@ -431,6 +533,7 @@ export class IndexingService {
     });
   }
 
+  /** Notifies the indexing user of the push and syncs the index in the background. */
   async handlePushWebhook(payload: GithubPushWebhookPayload) {
     const ref = payload.ref;
     const owner = payload.repository?.owner?.login;
@@ -458,7 +561,19 @@ export class IndexingService {
         `after=${payload.after} changed=${changed.length} removed=${removed.length}`,
     );
 
-    await this.runIncrementalUpdate(
+    this.events.emit(record.indexedByUserId, 'push.received', {
+      owner,
+      repo,
+      branch,
+      sha: payload.after,
+      message: payload.head_commit?.message?.split('\n')[0],
+      pusher: payload.pusher?.name,
+      compareUrl: payload.compare,
+      changed: changed.length,
+      removed: removed.length,
+    });
+
+    void this.runIncrementalUpdate(
       record.indexedByUserId,
       owner,
       repo,
@@ -466,12 +581,95 @@ export class IndexingService {
       changed,
       removed,
       payload.after,
-    );
+    ).catch(() => undefined);
 
     return {
       handled: true,
       changed: changed.length,
       removed: removed.length,
     };
+  }
+
+  private key(owner: string, repo: string, branch: string) {
+    return `${owner}/${repo}@${branch}`;
+  }
+
+  private summary(job: IndexProgress) {
+    return {
+      owner: job.owner,
+      repo: job.repo,
+      branch: job.branch,
+      kind: job.kind,
+      total: job.total,
+      processed: job.processed,
+      startedAt: job.startedAt,
+    };
+  }
+
+  /** Returns null when another job already reports progress for this branch. */
+  private beginProgress(
+    userId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+    kind: IndexProgress['kind'],
+  ): IndexProgress | null {
+    const key = this.key(owner, repo, branch);
+    if (this.progress.has(key)) return null;
+    const job: IndexProgress = {
+      userId,
+      owner,
+      repo,
+      branch,
+      kind,
+      total: 0,
+      processed: 0,
+      startedAt: new Date().toISOString(),
+      files: [],
+    };
+    this.progress.set(key, job);
+    this.events.emit(userId, 'index.started', this.summary(job));
+    return job;
+  }
+
+  private setTotal(job: IndexProgress | null, total: number) {
+    if (!job) return;
+    job.total = total;
+    this.events.emit(job.userId, 'index.progress', this.summary(job));
+  }
+
+  private recordFile(job: IndexProgress | null, file: IndexedFile) {
+    if (!job) return;
+    job.processed += 1;
+    job.files.push(file);
+    if (job.files.length > MAX_TRACKED_FILES) job.files.shift();
+    this.events.emit(job.userId, 'index.file', { ...this.summary(job), file });
+  }
+
+  private completeProgress(
+    job: IndexProgress | null,
+    result: {
+      status: string;
+      fileCount: number;
+      chunkCount: number;
+      skipped: number;
+      failed: number;
+    },
+  ) {
+    if (!job) return;
+    this.progress.delete(this.key(job.owner, job.repo, job.branch));
+    this.events.emit(job.userId, 'index.completed', {
+      ...this.summary(job),
+      ...result,
+    });
+  }
+
+  private failProgress(job: IndexProgress | null, error: unknown) {
+    if (!job) return;
+    this.progress.delete(this.key(job.owner, job.repo, job.branch));
+    this.events.emit(job.userId, 'index.failed', {
+      ...this.summary(job),
+      error: error instanceof Error ? error.message : 'Indexing failed',
+    });
   }
 }
