@@ -37,6 +37,10 @@ export class Clients {
 
   @Prop({ select: false })
   githubAccessToken?: string;
+
+  /** AES-256-GCM encrypted Gemini API key; overrides GEMINI_API_KEY for this user. */
+  @Prop({ select: false })
+  geminiApiKey?: string;
 }
 
 export const ClientsSchema = SchemaFactory.createForClass(Clients);

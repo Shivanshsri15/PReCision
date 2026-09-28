@@ -330,26 +330,22 @@ export class GithubService {
     return decodeGithubRepositoryFileContentIfApplicable(data);
   }
 
-  async listRepositoryWebhooks(
-    user: AuthenticatedUser,
-    owner: string,
-    repo: string,
-  ) {
+  async listRepositoryWebhooks(userId: string, owner: string, repo: string) {
     return this.githubRequest<GithubWebhook[]>(
-      user.userId,
+      userId,
       `/repos/${owner}/${repo}/hooks`,
     );
   }
 
   async createRepositoryWebhook(
-    user: AuthenticatedUser,
+    userId: string,
     owner: string,
     repo: string,
     webhookUrl: string,
     secret: string,
   ) {
     return this.githubRequest<GithubWebhook>(
-      user.userId,
+      userId,
       `/repos/${owner}/${repo}/hooks`,
       {
         method: 'POST',
@@ -369,13 +365,13 @@ export class GithubService {
   }
 
   async deleteRepositoryWebhook(
-    user: AuthenticatedUser,
+    userId: string,
     owner: string,
     repo: string,
     hookId: number,
   ) {
     await this.githubRequestForUserId(
-      user.userId,
+      userId,
       `/repos/${owner}/${repo}/hooks/${hookId}`,
       { method: 'DELETE' },
       false,
@@ -417,7 +413,7 @@ export class GithubService {
   }
 
   async ensurePushWebhook(
-    user: AuthenticatedUser,
+    userId: string,
     owner: string,
     repo: string,
     webhookUrl: string,
@@ -425,7 +421,7 @@ export class GithubService {
   ) {
     const normalizedUrl = this.normalizeWebhookUrl(webhookUrl);
     const secret = this.config.getOrThrow<string>('GITHUB_WEBHOOK_SECRET');
-    const hooks = await this.listRepositoryWebhooks(user, owner, repo);
+    const hooks = await this.listRepositoryWebhooks(userId, owner, repo);
     const matchedHook = this.findRepositoryWebhookByUrl(hooks, normalizedUrl);
 
     if (matchedHook) {
@@ -438,14 +434,14 @@ export class GithubService {
 
     if (existingHookId) {
       try {
-        await this.deleteRepositoryWebhook(user, owner, repo, existingHookId);
+        await this.deleteRepositoryWebhook(userId, owner, repo, existingHookId);
       } catch {
         // Previous hook may have been removed manually on GitHub.
       }
     }
 
     const hook = await this.createRepositoryWebhook(
-      user,
+      userId,
       owner,
       repo,
       normalizedUrl,

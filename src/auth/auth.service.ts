@@ -104,6 +104,7 @@ export class AuthService {
         ? client.toJSON()
         : { ...client };
     delete json.githubAccessToken;
+    delete json.geminiApiKey;
     return json;
   }
 }

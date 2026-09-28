@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { GeminiKeyService } from '../auth/gemini-key.service.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
 import { GithubService } from '../github/github.service.js';
 import { RetrieverService } from '../repo-rag/retrieval/retriever.service.js';
@@ -38,6 +39,7 @@ export class CcodeReviewService {
   constructor(
     private readonly retrieverService: RetrieverService,
     private readonly githubService: GithubService,
+    private readonly geminiKeyService: GeminiKeyService,
     @InjectModel(CodeReviewRun.name)
     private readonly codeReviewRunModel: Model<CodeReviewRunDocument>,
   ) {}
@@ -124,6 +126,8 @@ export class CcodeReviewService {
     );
     console.log(`${LOG_PREFIX} index verified for ${repoId}@${payload.baseBranch}`);
 
+    const geminiApiKey = await this.geminiKeyService.resolve(userId);
+
     const run = await this.codeReviewRunModel.create({
       userId: new Types.ObjectId(userId),
       owner: payload.owner,
@@ -141,7 +145,10 @@ export class CcodeReviewService {
           `pipeline=inputGuard→retriever→[quality|security|performance]→join→bugDetection→assembler`,
       );
       const graph = buildGraph(this.retrieverService);
-      const result = await graph.invoke({ input: payload });
+      const result = await graph.invoke(
+        { input: payload },
+        { configurable: { geminiApiKey } },
+      );
       const finalReport = result.finalReport ?? {
         prId: payload.prId,
         overallSummary: 'Review completed.',
