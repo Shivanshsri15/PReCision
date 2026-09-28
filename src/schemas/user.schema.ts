@@ -2,7 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
 export type ClientsDocument = HydratedDocument<Clients>;
-export const AUTH_PROVIDERS = ['local', 'github'] as const;
+export const AUTH_PROVIDERS = ['github'] as const;
 export type AuthProvider = (typeof AUTH_PROVIDERS)[number];
 
 @Schema({ timestamps: true, collection:'Clients' })
@@ -19,13 +19,10 @@ export class Clients {
   @Prop({
     required: true,
     enum: AUTH_PROVIDERS,
-    default: 'local',
+    default: 'github',
     index: true,
   })
   provider!: AuthProvider;
-
-  @Prop({ select: false })
-  password?: string;
 
   @Prop({
     unique: true,

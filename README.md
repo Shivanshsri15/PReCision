@@ -40,9 +40,9 @@ The output is structured, actionable, and context-aware — not noise.
 
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
-| `POST` | `/api/v1/auth/signup` | Public | Register user (email, password) |
-| `POST` | `/api/v1/auth/login` | Public | Login using email/password and receive JWT |
 | `GET` | `/api/v1/auth/me` | JWT | Get current authenticated user profile |
+
+Sign-in is GitHub-only: the app JWT is issued by the GitHub OAuth callback below.
 
 ---
 
