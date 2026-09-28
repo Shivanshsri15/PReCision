@@ -33,6 +33,7 @@ export interface RetrievalInput {
   repo: string;
   baseBranch: string;
   files: PRFile[];
+  geminiApiKey?: string;
 }
 
 @Injectable()
@@ -60,7 +61,7 @@ export class RetrieverService {
     chunks: RetrievedChunk[];
     formatted: string;
   }> {
-    const { owner, repo, baseBranch, files } = input;
+    const { owner, repo, baseBranch, files, geminiApiKey } = input;
     const repoId = `${owner}/${repo}`;
     console.log(
       `${LOG_PREFIX} retrieval started: ${repoId}@${baseBranch} files=${files.length}`,
@@ -102,7 +103,10 @@ export class RetrieverService {
     let semanticResults: RetrievedChunk[] = [];
     if (semanticQueryText.trim().length > 0) {
       try {
-        const embedding = await this.embeddingsService.embedQuery(semanticQueryText);
+        const embedding = await this.embeddingsService.embedQuery(
+          semanticQueryText,
+          geminiApiKey,
+        );
         semanticResults = await this.vectorStore.query(
           embedding,
           repoId,

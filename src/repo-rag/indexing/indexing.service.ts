@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { GeminiKeyService } from '../../auth/gemini-key.service.js';
 import type { AuthenticatedUser } from '../../auth/types/authenticated-user.type.js';
 import type { GithubPushWebhookPayload } from '../../github/github.types.js';
 import { GithubService } from '../../github/github.service.js';
@@ -25,6 +26,7 @@ export class IndexingService {
     private readonly embeddingsService: EmbeddingsService,
     private readonly vectorStore: VectorStoreService,
     private readonly config: ConfigService,
+    private readonly geminiKeyService: GeminiKeyService,
   ) {}
 
   async getStatus(owner: string, repo: string, branch: string) {
@@ -87,6 +89,9 @@ export class IndexingService {
     );
 
     try {
+      const geminiApiKey = await this.geminiKeyService.resolve(userId);
+      await this.ensureBranchWebhook(userId, record);
+
       console.log(
         `${LOG_PREFIX} full index started: ${repoId}@${branch} (maxFiles=${maxFiles})`,
       );
@@ -173,6 +178,7 @@ export class IndexingService {
               );
               const embeddings = await this.embeddingsService.embedBatch(
                 chunks.map((chunk) => chunk.text),
+                geminiApiKey,
               );
               await this.vectorStore.upsertChunks(
                 repoId,
@@ -227,6 +233,8 @@ export class IndexingService {
         lastIndexedAt: updated?.lastIndexedAt,
         cappedAt: maxFiles,
         totalEligibleFiles: blobs.length,
+        webhookId: updated?.webhookId,
+        webhookUrl: updated?.webhookUrl,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Indexing failed';
@@ -262,6 +270,7 @@ export class IndexingService {
     });
 
     try {
+      const geminiApiKey = await this.geminiKeyService.resolve(userId);
       console.log(
         `${LOG_PREFIX} incremental update started: ${repoId}@${branch} ` +
           `changed=${changedPaths.length} removed=${removedPaths.length}`,
@@ -322,6 +331,7 @@ export class IndexingService {
           );
           const embeddings = await this.embeddingsService.embedBatch(
             chunks.map((chunk) => chunk.text),
+            geminiApiKey,
           );
           await this.vectorStore.upsertChunks(
             repoId,
@@ -377,56 +387,40 @@ export class IndexingService {
     }
   }
 
-  async registerBranchWebhook(
-    user: AuthenticatedUser,
-    owner: string,
-    repo: string,
-    branch: string,
-    webhookUrl: string,
-  ) {
-    const repoId = `${owner}/${repo}`;
-
-    let record = await this.repoIndexModel.findOne({ owner, repo, branch });
-    if (!record) {
-      record = await this.repoIndexModel.create({
-        owner,
-        repo,
-        branch,
-        repoId,
-        status: 'pending',
-        indexedByUserId: user.userId,
-      });
-    } else if (record.indexedByUserId !== user.userId) {
-      record.indexedByUserId = user.userId;
-      await record.save();
+  /**
+   * Registers (or reuses) the repo push webhook before a branch is indexed so
+   * no pushes are missed while indexing runs. GitHub webhooks are repo-level;
+   * pushes to branches without an index record are ignored in handlePushWebhook.
+   */
+  private async ensureBranchWebhook(
+    userId: string,
+    record: RepoIndexDocument,
+  ): Promise<void> {
+    const webhookUrl = this.config.get<string>('GITHUB_WEBHOOK_URL');
+    if (!webhookUrl) {
+      console.warn(
+        `${LOG_PREFIX} GITHUB_WEBHOOK_URL not set; skipping webhook for ${record.repoId}@${record.branch}`,
+      );
+      return;
     }
 
     const { hook, webhookUrl: normalizedUrl, created } =
       await this.githubService.ensurePushWebhook(
-        user,
-        owner,
-        repo,
+        userId,
+        record.owner,
+        record.repo,
         webhookUrl,
         record.webhookId,
       );
+    console.log(
+      `${LOG_PREFIX} webhook ${created ? 'created' : 'reused'}: ${record.repoId}@${record.branch} ` +
+        `id=${hook.id} url=${normalizedUrl}`,
+    );
 
-    record.webhookId = hook.id;
-    record.webhookUrl = normalizedUrl;
-    await record.save();
-
-    return {
-      owner,
-      repo,
-      branch,
+    await this.repoIndexModel.findByIdAndUpdate(record._id, {
       webhookId: hook.id,
       webhookUrl: normalizedUrl,
-      created,
-      events: hook.events,
-      active: hook.active,
-      message: created
-        ? undefined
-        : 'Webhook already registered for this URL',
-    };
+    });
   }
 
   async handlePushWebhook(payload: GithubPushWebhookPayload) {
@@ -442,42 +436,10 @@ export class IndexingService {
     const record = await this.repoIndexModel.findOne({ owner, repo, branch });
 
     if (!record) {
-      // Branch isn't indexed yet. Auto-enroll it, but only if it's an allowed
-      // review branch AND the repo was already connected by some user — the
-      // webhook itself carries no identity, so we reuse that user's token.
-      if (!this.isAllowedReviewBranch(branch)) {
-        console.log(
-          `${LOG_PREFIX} webhook push ignored (branch not in allowlist): ${owner}/${repo}@${branch}`,
-        );
-        return { handled: false, reason: 'branch-not-allowed' };
-      }
-
-      const repoRecord = await this.repoIndexModel.findOne({ owner, repo });
-      if (!repoRecord) {
-        console.log(
-          `${LOG_PREFIX} webhook push ignored (repo not connected): ${owner}/${repo}@${branch}`,
-        );
-        return { handled: false, reason: 'repo-not-connected' };
-      }
-
       console.log(
-        `${LOG_PREFIX} webhook push: auto-indexing new branch ${owner}/${repo}@${branch}`,
+        `${LOG_PREFIX} webhook push ignored (branch not indexed): ${owner}/${repo}@${branch}`,
       );
-      // A full index can't be built from a push payload (it lists only changed
-      // files) and is slow — fire-and-forget so the webhook returns 200 fast.
-      void this.runFullIndexForUserId(
-        repoRecord.indexedByUserId,
-        owner,
-        repo,
-        branch,
-      ).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(
-          `${LOG_PREFIX} auto-index failed: ${owner}/${repo}@${branch} — ${message}`,
-        );
-      });
-
-      return { handled: true, action: 'full-index-started', branch };
+      return { handled: false, reason: 'branch-not-indexed' };
     }
 
     const { changed, removed } =
@@ -503,15 +465,5 @@ export class IndexingService {
       changed: changed.length,
       removed: removed.length,
     };
-  }
-
-  private isAllowedReviewBranch(branch: string): boolean {
-    const configured =
-      this.config.get<string>('ALLOWED_REVIEW_BRANCHES') ?? 'main,master';
-    const allowed = configured
-      .split(',')
-      .map((b) => b.trim())
-      .filter(Boolean);
-    return allowed.includes(branch);
   }
 }
