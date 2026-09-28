@@ -1,4 +1,8 @@
-import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
+import {
+  type BatchEmbedContentsRequest,
+  GoogleGenerativeAI,
+  TaskType,
+} from '@google/generative-ai';
 import { Embeddings } from '@langchain/core/embeddings';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -97,8 +101,9 @@ export class EmbeddingsService {
         requests: texts.map((text) => ({
           content: { role: 'user', parts: [{ text }] },
           taskType: TaskType.RETRIEVAL_QUERY,
+          // Supported by the API but missing from the SDK's request type.
           outputDimensionality: this.outputDimensionality,
-        })) as any,
+        })) as unknown as BatchEmbedContentsRequest['requests'],
       }),
     );
 

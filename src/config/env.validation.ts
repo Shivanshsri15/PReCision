@@ -22,7 +22,7 @@ export const envValidationSchema = Joi.object({
     .default('read:user user:email repo pull_request:read'),
   // Fallback when a user hasn't saved their own key via PUT /api/v1/auth/gemini-key.
   GEMINI_API_KEY: Joi.string().allow('').optional(),
-  GEMINI_MODEL: Joi.string().default('gemini-2.5-flash'),
+  GEMINI_MODEL: Joi.string().default('gemini-3.1-flash-lite'),
   EMBEDDING_MODEL: Joi.string().default('gemini-embedding-001'),
   EMBEDDING_DIMS: Joi.number().integer().default(768),
   VECTOR_INDEX_NAME: Joi.string().default('repo_vectors_index'),

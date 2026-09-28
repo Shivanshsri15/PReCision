@@ -17,9 +17,14 @@ import {
   type ContextCache,
   type PostedComment,
 } from './schemas/code-review-run.schema.js';
+import { describeGeminiError } from './langgraph/gemini-errors.js';
 import { buildGraph } from './langgraph/graph.js';
 import { parsePatchHunks } from './langgraph/node/patch-hunks.js';
-import type { Finding, PRAnalysisPayload, RetrievedChunk } from './langgraph/state.js';
+import type {
+  Finding,
+  PRAnalysisPayload,
+  RetrievedChunk,
+} from './langgraph/state.js';
 
 const LOG_PREFIX = '[code-review]';
 const STALE_RUN_MS = 30 * 60 * 1000;
@@ -66,10 +71,16 @@ export class CcodeReviewService implements OnModuleInit {
   async onModuleInit() {
     const { modifiedCount } = await this.codeReviewRunModel.updateMany(
       { status: 'running' },
-      { status: 'failed', error: 'Interrupted: the server restarted before the analysis finished.' },
+      {
+        status: 'failed',
+        error:
+          'Interrupted: the server restarted before the analysis finished.',
+      },
     );
     if (modifiedCount) {
-      console.log(`${LOG_PREFIX} marked ${modifiedCount} interrupted run(s) as failed`);
+      console.log(
+        `${LOG_PREFIX} marked ${modifiedCount} interrupted run(s) as failed`,
+      );
     }
   }
 
@@ -80,7 +91,10 @@ export class CcodeReviewService implements OnModuleInit {
         status: 'running',
         updatedAt: { $lt: new Date(Date.now() - STALE_RUN_MS) },
       },
-      { status: 'failed', error: 'Interrupted: the analysis stopped responding.' },
+      {
+        status: 'failed',
+        error: 'Interrupted: the analysis stopped responding.',
+      },
     );
   }
 
@@ -108,7 +122,11 @@ export class CcodeReviewService implements OnModuleInit {
     const summaryOnly: Finding[] = [];
     for (const finding of findings) {
       if (finding.line && commentable.get(finding.file)?.has(finding.line)) {
-        comments.push({ path: finding.file, line: finding.line, body: formatFinding(finding) });
+        comments.push({
+          path: finding.file,
+          line: finding.line,
+          body: formatFinding(finding),
+        });
         inlineFindings.push(finding);
       } else {
         summaryOnly.push(finding);
@@ -120,7 +138,10 @@ export class CcodeReviewService implements OnModuleInit {
       bodyParts.push(
         '### Findings not on a diff line\n\n' +
           summaryOnly
-            .map((f) => `- \`${f.file}${f.line ? `:${f.line}` : ''}\` **${f.severity.toUpperCase()}**: ${f.issue}${f.suggestion ? `\n  - Suggestion: ${f.suggestion}` : ''}`)
+            .map(
+              (f) =>
+                `- \`${f.file}${f.line ? `:${f.line}` : ''}\` **${f.severity.toUpperCase()}**: ${f.issue}${f.suggestion ? `\n  - Suggestion: ${f.suggestion}` : ''}`,
+            )
             .join('\n'),
       );
     }
@@ -136,7 +157,9 @@ export class CcodeReviewService implements OnModuleInit {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`${LOG_PREFIX} review post failed: PR #${payload.prId} — ${message}`);
+      console.error(
+        `${LOG_PREFIX} review post failed: PR #${payload.prId} — ${message}`,
+      );
       return {
         posted: false,
         inlineComments: 0,
@@ -146,9 +169,19 @@ export class CcodeReviewService implements OnModuleInit {
       };
     }
 
-    const commentIds = await this.mapCommentIds(user, payload, review.id, comments.length);
-    const postedComments: PostedComment[] = [...inlineFindings, ...summaryOnly].map((finding) => ({
-      commentId: finding.line ? commentIds.get(`${finding.file}:${finding.line}`) : undefined,
+    const commentIds = await this.mapCommentIds(
+      user,
+      payload,
+      review.id,
+      comments.length,
+    );
+    const postedComments: PostedComment[] = [
+      ...inlineFindings,
+      ...summaryOnly,
+    ].map((finding) => ({
+      commentId: finding.line
+        ? commentIds.get(`${finding.file}:${finding.line}`)
+        : undefined,
       file: finding.file,
       line: finding.line,
       issue: finding.issue,
@@ -187,7 +220,9 @@ export class CcodeReviewService implements OnModuleInit {
   async markComplete(user: AuthenticatedUser, runId: string) {
     const run = await this.findOwnedRun(user.userId, runId);
     if (run.status !== 'completed') {
-      throw new BadRequestException('Only a finished analysis can be marked complete');
+      throw new BadRequestException(
+        'Only a finished analysis can be marked complete',
+      );
     }
 
     const resolved = await this.resolveOpenComments(
@@ -220,7 +255,10 @@ export class CcodeReviewService implements OnModuleInit {
     userId: string,
     payload: PRAnalysisPayload,
     onStep?: (node: string) => void,
-    options: { onRunCreated?: (runId: string) => void; signal?: AbortSignal } = {},
+    options: {
+      onRunCreated?: (runId: string) => void;
+      signal?: AbortSignal;
+    } = {},
   ) {
     const repoId = `${payload.owner}/${payload.repo}`;
     console.log(
@@ -234,7 +272,9 @@ export class CcodeReviewService implements OnModuleInit {
       payload.repo,
       payload.baseBranch,
     );
-    console.log(`${LOG_PREFIX} index verified for ${repoId}@${payload.baseBranch}`);
+    console.log(
+      `${LOG_PREFIX} index verified for ${repoId}@${payload.baseBranch}`,
+    );
 
     const geminiApiKey = await this.geminiKeyService.resolve(userId);
 
@@ -280,11 +320,17 @@ export class CcodeReviewService implements OnModuleInit {
       const stream = await graph.stream(
         {
           input: payload,
-          previousFindings: previousFindings.length ? previousFindings : undefined,
+          previousFindings: previousFindings.length
+            ? previousFindings
+            : undefined,
           relatedContext: cachedContext?.chunks,
           relatedContextFormatted: cachedContext?.formatted,
         },
-        { configurable: { geminiApiKey }, streamMode: 'updates', signal: options.signal },
+        {
+          configurable: { geminiApiKey },
+          streamMode: 'updates',
+          signal: options.signal,
+        },
       );
 
       let assembledReport: Record<string, unknown> | undefined;
@@ -343,17 +389,20 @@ export class CcodeReviewService implements OnModuleInit {
     } catch (error) {
       const message = options.signal?.aborted
         ? 'Cancelled by user.'
-        : error instanceof Error
-          ? error.message
-          : 'Analysis failed';
+        : describeGeminiError(error);
+      const quotaId =
+        error instanceof Error
+          ? /"quotaId":"([^"]+)"/.exec(error.message)?.[1]
+          : undefined;
       console.error(
-        `${LOG_PREFIX} analyze failed: ${repoId} PR #${payload.prId} runId=${run._id} — ${message}`,
+        `${LOG_PREFIX} analyze failed: ${repoId} PR #${payload.prId} runId=${run._id} — ${message}` +
+          (quotaId ? ` (quota: ${quotaId})` : ''),
       );
       await this.codeReviewRunModel.findByIdAndUpdate(run._id, {
         status: 'failed',
         error: message,
       });
-      throw options.signal?.aborted ? new Error(message) : error;
+      throw new Error(message);
     }
   }
 
@@ -380,7 +429,9 @@ export class CcodeReviewService implements OnModuleInit {
     userId: string,
     filters: { limit: number; owner?: string; repo?: string },
   ) {
-    const query: Record<string, unknown> = { userId: new Types.ObjectId(userId) };
+    const query: Record<string, unknown> = {
+      userId: new Types.ObjectId(userId),
+    };
     if (filters.owner) query.owner = filters.owner;
     if (filters.repo) query.repo = filters.repo;
 
@@ -415,9 +466,15 @@ export class CcodeReviewService implements OnModuleInit {
           $group: {
             _id: null,
             reviews: { $sum: 1 },
-            completed: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
-            high: { $sum: { $ifNull: ['$finalReport.counts.severity.high', 0] } },
-            medium: { $sum: { $ifNull: ['$finalReport.counts.severity.medium', 0] } },
+            completed: {
+              $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
+            },
+            high: {
+              $sum: { $ifNull: ['$finalReport.counts.severity.high', 0] },
+            },
+            medium: {
+              $sum: { $ifNull: ['$finalReport.counts.severity.medium', 0] },
+            },
             low: { $sum: { $ifNull: ['$finalReport.counts.severity.low', 0] } },
           },
         },
@@ -425,12 +482,24 @@ export class CcodeReviewService implements OnModuleInit {
       this.indexingService.listForUser(userId),
     ]);
 
-    const totals = runStats[0] ?? { reviews: 0, completed: 0, high: 0, medium: 0, low: 0 };
+    const totals = runStats[0] ?? {
+      reviews: 0,
+      completed: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+    };
     return {
       repositories: new Set(indexed.map((record) => record.repoId)).size,
       indexedBranches: indexed.length,
-      indexedChunks: indexed.reduce((sum, record) => sum + (record.chunkCount ?? 0), 0),
-      indexedFiles: indexed.reduce((sum, record) => sum + (record.fileCount ?? 0), 0),
+      indexedChunks: indexed.reduce(
+        (sum, record) => sum + (record.chunkCount ?? 0),
+        0,
+      ),
+      indexedFiles: indexed.reduce(
+        (sum, record) => sum + (record.fileCount ?? 0),
+        0,
+      ),
       reviews: totals.reviews,
       completedReviews: totals.completed,
       findings: totals.high + totals.medium + totals.low,
@@ -467,11 +536,16 @@ export class CcodeReviewService implements OnModuleInit {
         reviewId,
       );
       return new Map(
-        posted.map((comment) => [`${comment.path}:${comment.line ?? comment.original_line}`, comment.id]),
+        posted.map((comment) => [
+          `${comment.path}:${comment.line ?? comment.original_line}`,
+          comment.id,
+        ]),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`${LOG_PREFIX} could not load review comment ids: ${message}`);
+      console.warn(
+        `${LOG_PREFIX} could not load review comment ids: ${message}`,
+      );
       return new Map();
     }
   }
@@ -492,7 +566,9 @@ export class CcodeReviewService implements OnModuleInit {
         owner: pr.owner,
         repo: pr.repo,
         pullNumber: pr.pullNumber,
-        ...(exceptRunId ? { _id: { $ne: new Types.ObjectId(exceptRunId) } } : {}),
+        ...(exceptRunId
+          ? { _id: { $ne: new Types.ObjectId(exceptRunId) } }
+          : {}),
         postedComments: { $elemMatch: { resolved: false } },
       })
       .select('postedComments')
@@ -516,14 +592,19 @@ export class CcodeReviewService implements OnModuleInit {
                 replyBody,
               )
               .catch((error: unknown) => {
-                const message = error instanceof Error ? error.message : String(error);
-                console.warn(`${LOG_PREFIX} resolve reply failed for comment ${comment.commentId}: ${message}`);
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                console.warn(
+                  `${LOG_PREFIX} resolve reply failed for comment ${comment.commentId}: ${message}`,
+                );
               });
           }
           return { ...comment, resolved: true, resolvedAt };
         }),
       );
-      await this.codeReviewRunModel.findByIdAndUpdate(run._id, { postedComments: comments });
+      await this.codeReviewRunModel.findByIdAndUpdate(run._id, {
+        postedComments: comments,
+      });
     }
     return resolvedCount;
   }
