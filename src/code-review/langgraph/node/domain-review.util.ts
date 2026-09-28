@@ -21,11 +21,27 @@ export function buildFilesPromptSection(state: GraphState): string {
 
 export function buildRelatedContextBlock(state: GraphState): string {
   const formatted = state.relatedContextFormatted?.trim();
-  if (!formatted) {
+  const context = formatted
+    ? `\n${formatted}\n\nRelated context is for understanding cross-file impact only. Never report findings on these files; report the defect on the changed line in FILES that causes it.\n`
+    : '';
+  return context + buildPreviousFindingsBlock(state);
+}
+
+function buildPreviousFindingsBlock(state: GraphState): string {
+  const previous = state.previousFindings ?? [];
+  if (!previous.length) {
     return '';
   }
 
-  return `\n${formatted}\n\nRelated context is for understanding cross-file impact only. Never report findings on these files; report the defect on the changed line in FILES that causes it.\n`;
+  const lines = previous.map(
+    (f) => `- ${f.file}${f.line ? `:${f.line}` : ''} [${f.severity}] ${f.issue}`,
+  );
+  return `
+PREVIOUS REVIEW FINDINGS (from the last analysis of this PR, before the latest changes):
+${lines.join('\n')}
+
+Re-check each previous finding against the current code. Report it again, on its current line, only if it is still present; omit the ones that were fixed.
+`;
 }
 
 export function logDomainComplete(domain: DomainKey, report: DomainReport): void {

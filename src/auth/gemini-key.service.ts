@@ -40,6 +40,10 @@ export class GeminiKeyService {
     return (await this.getUserKey(userId)) !== null;
   }
 
+  hasEnvKey(): boolean {
+    return Boolean(this.config.get<string>('GEMINI_API_KEY'));
+  }
+
   async resolve(userId: string): Promise<string> {
     const key = (await this.getUserKey(userId)) ?? this.config.get<string>('GEMINI_API_KEY');
     if (!key) {

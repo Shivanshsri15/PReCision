@@ -7,6 +7,13 @@ import { IndexingService } from './indexing.service.js';
 export class IndexingController {
   constructor(private readonly indexingService: IndexingService) {}
 
+  /** Branch index records created by the current user, newest first. */
+  @UseGuards(JwtAuthGuard)
+  @Get('/repositories')
+  async listIndexedRepositories(@Request() req: { user: AuthenticatedUser }) {
+    return this.indexingService.listForUser(req.user.userId);
+  }
+
   /** Registers the repo push webhook (GITHUB_WEBHOOK_URL) first, then indexes the branch. */
   @UseGuards(JwtAuthGuard)
   @Post('/repositories/:owner/:repo/branches/:branch/index')

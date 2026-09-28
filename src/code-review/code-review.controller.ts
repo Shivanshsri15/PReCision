@@ -1,14 +1,18 @@
 import {
   Controller,
+  DefaultValuePipe,
   Get,
+  HttpException,
   Param,
   ParseBoolPipe,
   ParseIntPipe,
   Post,
   Query,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response as ExpressResponse } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
 import { GithubService } from '../github/github.service.js';
@@ -62,8 +66,150 @@ export class CodeReviewController {
         `postComments=${postComments ? 'yes' : 'no'}`,
     );
 
+    const payload = await this.buildPayload(req.user, owner, repo, pullNumber);
+    const result = await this.codeReviewService.analyzePR(req.user.userId, payload);
+    if (!postComments) {
+      return result;
+    }
+
+    const review = await this.postComments(req.user, payload, result);
+    return { ...result, review };
+  }
+
+  /**
+   * Same as `analyze`, but streams Server-Sent Events while the pipeline runs:
+   * `started`, one `step` per finished graph node, `result`, optional `review`,
+   * then `done` — or `error` on failure.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('/repositories/:owner/:repo/pulls/:pullNumber/analyze/stream')
+  async analyzePullRequestStream(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('owner') owner: string,
+    @Param('repo') repo: string,
+    @Param('pullNumber', ParseIntPipe) pullNumber: number,
+    @Res() res: ExpressResponse,
+    @Query('postComments', new ParseBoolPipe({ optional: true }))
+    postComments?: boolean,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (event: string, data: unknown) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const payload = await this.buildPayload(req.user, owner, repo, pullNumber);
+      send('started', {
+        title: payload.title,
+        files: payload.files.length,
+        baseBranch: payload.baseBranch,
+        headSha: payload.headSha,
+      });
+
+      const result = await this.codeReviewService.analyzePR(
+        req.user.userId,
+        payload,
+        (node) => send('step', { node, status: 'done' }),
+      );
+      send('result', result);
+
+      if (postComments) {
+        send('review', await this.postComments(req.user, payload, result));
+      }
+      send('done', { runId: result.runId });
+    } catch (error) {
+      send('error', {
+        status: error instanceof HttpException ? error.getStatus() : 500,
+        message: error instanceof Error ? error.message : 'Analysis failed',
+      });
+    } finally {
+      res.end();
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/repositories/:owner/:repo/pulls/:pullNumber/runs')
+  async listRuns(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('owner') owner: string,
+    @Param('repo') repo: string,
+    @Param('pullNumber', ParseIntPipe) pullNumber: number,
+  ) {
+    return this.codeReviewService.listRuns(
+      req.user.userId,
+      owner,
+      repo,
+      pullNumber,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/runs')
+  async listUserRuns(
+    @Request() req: { user: AuthenticatedUser },
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+    @Query('owner') owner?: string,
+    @Query('repo') repo?: string,
+  ) {
+    return this.codeReviewService.listUserRuns(req.user.userId, {
+      limit: Math.min(Math.max(limit, 1), 200),
+      owner,
+      repo,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/runs/:runId')
+  async getRun(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('runId') runId: string,
+  ) {
+    return this.codeReviewService.getRun(req.user.userId, runId);
+  }
+
+  /** Resolves the PR's open PReCision comments; the next analysis starts fresh. */
+  @UseGuards(JwtAuthGuard)
+  @Post('/runs/:runId/complete')
+  async markRunComplete(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('runId') runId: string,
+  ) {
+    return this.codeReviewService.markComplete(req.user, runId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/stats')
+  async getStats(@Request() req: { user: AuthenticatedUser }) {
+    return this.codeReviewService.getStats(req.user.userId);
+  }
+
+  private postComments(
+    user: AuthenticatedUser,
+    payload: PRAnalysisPayload,
+    result: Record<string, unknown>,
+  ) {
+    return this.codeReviewService.postReviewComments(
+      user,
+      String(result.runId),
+      payload,
+      Array.isArray(result.findings) ? (result.findings as Finding[]) : [],
+      typeof result.overallSummary === 'string' ? result.overallSummary : '',
+    );
+  }
+
+  private async buildPayload(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<PRAnalysisPayload> {
     const pr = (await this.githubService.getPullRequest(
-      req.user,
+      user,
       owner,
       repo,
       pullNumber,
@@ -76,7 +222,7 @@ export class CodeReviewController {
     };
 
     const prFiles = (await this.githubService.listPullRequestFiles(
-      req.user,
+      user,
       owner,
       repo,
       pullNumber,
@@ -106,24 +252,10 @@ export class CodeReviewController {
         const [content, baseContent] = await Promise.all([
           file.status === 'removed'
             ? Promise.resolve('')
-            : fetchFileContent(
-                this.githubService,
-                req.user,
-                owner,
-                repo,
-                filename,
-                headSha,
-              ),
+            : fetchFileContent(this.githubService, user, owner, repo, filename, headSha),
           file.status === 'added'
             ? Promise.resolve('')
-            : fetchFileContent(
-                this.githubService,
-                req.user,
-                owner,
-                repo,
-                filename,
-                baseSha,
-              ),
+            : fetchFileContent(this.githubService, user, owner, repo, filename, baseSha),
         ]);
 
         console.log(
@@ -139,7 +271,7 @@ export class CodeReviewController {
       `${LOG_PREFIX} payload ready: ${files.length} files for analysis`,
     );
 
-    const payload: PRAnalysisPayload = {
+    return {
       prId: pr?.number ?? pullNumber,
       title: pr?.title ?? `PR #${pullNumber}`,
       description: pr?.body ?? undefined,
@@ -150,35 +282,5 @@ export class CodeReviewController {
       headSha,
       files,
     };
-
-    const result = await this.codeReviewService.analyzePR(req.user.userId, payload);
-    if (!postComments) {
-      return result;
-    }
-
-    const report = result as Record<string, unknown>;
-    const review = await this.codeReviewService.postReviewComments(
-      req.user,
-      payload,
-      Array.isArray(report.findings) ? (report.findings as Finding[]) : [],
-      typeof report.overallSummary === 'string' ? report.overallSummary : '',
-    );
-    return { ...result, review };
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('/repositories/:owner/:repo/pulls/:pullNumber/runs')
-  async listRuns(
-    @Request() req: { user: AuthenticatedUser },
-    @Param('owner') owner: string,
-    @Param('repo') repo: string,
-    @Param('pullNumber', ParseIntPipe) pullNumber: number,
-  ) {
-    return this.codeReviewService.listRuns(
-      req.user.userId,
-      owner,
-      repo,
-      pullNumber,
-    );
   }
 }

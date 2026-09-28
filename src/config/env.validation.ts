@@ -30,5 +30,7 @@ export const envValidationSchema = Joi.object({
   // Public URL GitHub POSTs push events to, e.g. https://<host>/api/v1/github/webhook
   GITHUB_WEBHOOK_URL: Joi.string().uri().allow('').optional(),
   INDEX_MAX_FILES: Joi.number().integer().min(1).default(1000),
+  // Frontend origin: allowed by CORS and the target of the OAuth callback redirect.
+  FRONTEND_URL: Joi.string().uri().default('http://localhost:5173'),
 }).unknown(true);
 

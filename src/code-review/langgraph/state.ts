@@ -35,6 +35,8 @@ export interface Finding {
   suggestion?: string;
   /** New-file line number of the changed line the defect is on. */
   line?: number;
+  /** Set by the assembler: the reviewer that reported this finding. */
+  domain?: DomainKey;
 }
 
 export type DomainKey = 'quality' | 'security' | 'performance' | 'bugDetection';
@@ -63,6 +65,8 @@ export const GraphAnnotation = Annotation.Root({
   cleanedInput: Annotation<PRAnalysisPayload | undefined>(),
   relatedContext: Annotation<RetrievedChunk[] | undefined>(),
   relatedContextFormatted: Annotation<string | undefined>(),
+  /** Findings of the previous (not marked complete) run on this PR; set on re-runs. */
+  previousFindings: Annotation<Finding[] | undefined>(),
   findings: Annotation<Finding[] | undefined>(),
   domainReports: Annotation<Partial<Record<DomainKey, DomainReport>>>({
     reducer: (left, right) => ({ ...left, ...right }),

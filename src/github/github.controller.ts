@@ -11,11 +11,16 @@ import {
   Query,
   Req,
   Request,
+  Res,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
-import type { Request as ExpressRequest } from 'express';
+import { ConfigService } from '@nestjs/config';
+import type {
+  Request as ExpressRequest,
+  Response as ExpressResponse,
+} from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
 import { IndexingService } from '../repo-rag/indexing/indexing.service.js';
@@ -31,6 +36,7 @@ export class GithubController {
   constructor(
     private readonly githubService: GithubService,
     private readonly indexingService: IndexingService,
+    private readonly config: ConfigService,
   ) {}
 
   // --- OAuth (typically unauthenticated or callback from GitHub) ---
@@ -40,12 +46,31 @@ export class GithubController {
     return this.githubService.getAuthorizationUrl();
   }
 
+  /** Completes GitHub OAuth and redirects to the frontend with the JWT in the URL hash. */
   @Get('/oauth/callback')
-  handleCallback(
+  async handleCallback(
     @Query('code') code: string,
     @Query('state') state: string,
+    @Res() res: ExpressResponse,
   ) {
-    return this.githubService.handleOAuthCallback(code, state);
+    const frontendUrl = this.config
+      .getOrThrow<string>('FRONTEND_URL')
+      .replace(/\/+$/, '');
+    try {
+      const { accessToken } = await this.githubService.handleOAuthCallback(
+        code,
+        state,
+      );
+      res.redirect(
+        `${frontendUrl}/auth/callback#token=${encodeURIComponent(accessToken)}`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'GitHub sign-in failed';
+      res.redirect(
+        `${frontendUrl}/auth/callback#error=${encodeURIComponent(message)}`,
+      );
+    }
   }
 
   // --- Authenticated GitHub REST ---

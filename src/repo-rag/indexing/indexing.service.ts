@@ -29,6 +29,14 @@ export class IndexingService {
     private readonly geminiKeyService: GeminiKeyService,
   ) {}
 
+  async listForUser(userId: string) {
+    return this.repoIndexModel
+      .find({ indexedByUserId: userId })
+      .select('-__v')
+      .sort({ updatedAt: -1 })
+      .lean();
+  }
+
   async getStatus(owner: string, repo: string, branch: string) {
     const record = await this.repoIndexModel.findOne({ owner, repo, branch });
     if (!record) {

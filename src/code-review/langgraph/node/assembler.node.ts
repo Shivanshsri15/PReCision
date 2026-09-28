@@ -25,8 +25,8 @@ export const assemblerNode = async (state: GraphState): Promise<Partial<GraphSta
     }
   }
 
-  const findings: Finding[] = DOMAIN_KEYS.flatMap(
-    (domain) => reports[domain]?.findings ?? [],
+  const findings: Finding[] = DOMAIN_KEYS.flatMap((domain) =>
+    (reports[domain]?.findings ?? []).map((finding) => ({ ...finding, domain })),
   ).sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
 
   const severityCounts = findings.reduce(
