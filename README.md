@@ -41,8 +41,13 @@ The output is structured, actionable, and context-aware — not noise.
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
 | `GET` | `/api/v1/auth/me` | JWT | Get current authenticated user profile |
+| `GET` | `/api/v1/auth/gemini-key` | JWT | Whether the user has saved their own Gemini API key (`{ configured }`) |
+| `PUT` | `/api/v1/auth/gemini-key` | JWT | Save the user's Gemini API key (`{ "apiKey": "..." }`), stored AES-256-GCM encrypted |
+| `DELETE` | `/api/v1/auth/gemini-key` | JWT | Remove the user's Gemini key (falls back to `GEMINI_API_KEY`) |
 
 Sign-in is GitHub-only: the app JWT is issued by the GitHub OAuth callback below.
+
+The user's Gemini key (cached in memory for 10 minutes) is used for PR reviews, retrieval embeddings, and indexing of branches they index; `GEMINI_API_KEY` is only a fallback.
 
 ---
 
@@ -77,6 +82,16 @@ Sign-in is GitHub-only: the app JWT is issued by the GitHub OAuth callback below
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
 | `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport`. Add `?postComments=true` to also post the findings to the PR as a GitHub review (inline comments on diff lines) |
+
+---
+
+### Repo Index — `/api/v1/repo-index`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `POST` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/index` | JWT | Registers the repo push webhook (`GITHUB_WEBHOOK_URL`) first, then fully indexes the branch |
+| `GET` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/status` | JWT | Index status, counts, and webhook info |
+| `POST` | `/api/v1/github/webhook` | HMAC signature | GitHub push receiver; incrementally re-indexes pushed branches that are indexed, ignores others |
 
 ## Architecture Overview
 
@@ -354,8 +369,12 @@ GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/github/oauth/callback
 # Token Encryption
 ENCRYPTION_KEY=your_32_byte_encryption_key
 
-# Gemini
+# Gemini (optional fallback; users can save their own key)
 GEMINI_API_KEY=your_gemini_api_key
+
+# Webhooks
+GITHUB_WEBHOOK_SECRET=your_webhook_secret
+GITHUB_WEBHOOK_URL=https://your-backend.example.com/api/v1/github/webhook
 ```
 
 ### Running the App

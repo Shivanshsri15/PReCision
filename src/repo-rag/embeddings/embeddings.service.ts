@@ -12,29 +12,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type EmbeddingModel = ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
+
 @Injectable()
 export class EmbeddingsService {
   private readonly model: string;
   private readonly outputDimensionality: number;
-  private readonly documentModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
-  private readonly queryModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
+  private readonly modelsByKey = new Map<string, EmbeddingModel>();
   private embedChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly config: ConfigService) {
-    const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
     this.model = this.config.getOrThrow<string>('EMBEDDING_MODEL');
     this.outputDimensionality = this.config.get<number>('EMBEDDING_DIMS') ?? 768;
-
-    const client = new GoogleGenerativeAI(apiKey);
-    this.documentModel = client.getGenerativeModel({ model: this.model });
-    this.queryModel = client.getGenerativeModel({ model: this.model });
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  /** `apiKey` is the caller's resolved Gemini key; falls back to GEMINI_API_KEY. */
+  async embedBatch(texts: string[], apiKey?: string): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
     }
 
+    const model = this.getModel(apiKey);
     return this.runSerialized(async () => {
       const results: number[][] = [];
 
@@ -45,7 +43,7 @@ export class EmbeddingsService {
 
         const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
         const response = await this.withRetry(() =>
-          this.documentModel.batchEmbedContents({
+          model.batchEmbedContents({
             requests: batch.map((text) => ({
               content: {
                 role: 'user',
@@ -66,10 +64,11 @@ export class EmbeddingsService {
     });
   }
 
-  async embedQuery(text: string): Promise<number[]> {
+  async embedQuery(text: string, apiKey?: string): Promise<number[]> {
+    const model = this.getModel(apiKey);
     return this.runSerialized(async () => {
       const response = await this.withRetry(() =>
-        this.queryModel.embedContent({
+        model.embedContent({
           content: {
             role: 'user',
             parts: [{ text }],
@@ -94,6 +93,20 @@ export class EmbeddingsService {
         return service.embedBatch(documents);
       }
     })({});
+  }
+
+  private getModel(apiKey?: string): EmbeddingModel {
+    const key = apiKey ?? this.config.get<string>('GEMINI_API_KEY');
+    if (!key) {
+      throw new Error('No Gemini API key available for embeddings');
+    }
+
+    let model = this.modelsByKey.get(key);
+    if (!model) {
+      model = new GoogleGenerativeAI(key).getGenerativeModel({ model: this.model });
+      this.modelsByKey.set(key, model);
+    }
+    return model;
   }
 
   private runSerialized<T>(fn: () => Promise<T>): Promise<T> {

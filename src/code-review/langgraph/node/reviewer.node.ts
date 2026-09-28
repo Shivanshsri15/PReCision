@@ -1,3 +1,4 @@
+import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { PARALLEL_DOMAIN_KEYS, type DomainReport, type GraphState } from '../state.js';
 import { createGemini } from '../gemini.factory.js';
 import {
@@ -33,6 +34,7 @@ Report only NEW correctness bugs not covered above. Return an empty findings arr
  */
 export const bugDetectionReviewerNode = async (
   state: GraphState,
+  config?: LangGraphRunnableConfig,
 ): Promise<Partial<GraphState>> => {
   const quality = state.domainReports?.quality;
   const security = state.domainReports?.security;
@@ -44,7 +46,7 @@ export const bugDetectionReviewerNode = async (
 
   console.log(`${LOG_PREFIX} bugDetection node: invoking LLM for PR #${state.input.prId}`);
 
-  const model = createGemini();
+  const model = createGemini(config);
   const filesText = buildFilesPromptSection(state);
   const relatedContext = buildRelatedContextBlock(state);
   const addendum = state.bugDetectionPromptAddendum?.trim();

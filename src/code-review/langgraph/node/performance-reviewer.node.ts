@@ -1,3 +1,4 @@
+import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { createGemini } from '../gemini.factory.js';
 import type { DomainReport, GraphState } from '../state.js';
 import {
@@ -12,8 +13,9 @@ import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 export const performanceReviewerNode = async (
   state: GraphState,
+  config?: LangGraphRunnableConfig,
 ): Promise<Partial<GraphState>> => {
-  const model = createGemini();
+  const model = createGemini(config);
   const filesText = buildFilesPromptSection(state);
   const relatedContext = buildRelatedContextBlock(state);
 
