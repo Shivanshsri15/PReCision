@@ -3,13 +3,28 @@ import { parsePatchHunks } from './patch-hunks.js';
 
 const LOG_PREFIX = '[code-review]';
 
+/**
+ * Full base files are the bulk of every reviewer prompt; past this size the
+ * hunks plus retrieved context carry enough signal and the prompt stays fast.
+ */
+const MAX_BASE_CHARS = 12_000;
+
+function baseSection(baseContent: string): string {
+  if (!baseContent) return '\n\nBASE: none (new file)';
+  if (baseContent.length <= MAX_BASE_CHARS) {
+    return `\n\nBASE (complete old file before this PR, context only):\n${baseContent}`;
+  }
+  return (
+    `\n\nBASE (first ${MAX_BASE_CHARS} chars of the old file before this PR, context only; truncated):\n` +
+    baseContent.slice(0, MAX_BASE_CHARS)
+  );
+}
+
 export function buildFilesPromptSection(state: GraphState): string {
   return (
     state.cleanedInput?.files
       ?.map((file) => {
-        const base = file.baseContent
-          ? `\n\nBASE (complete old file before this PR, context only):\n${file.baseContent}`
-          : '\n\nBASE: none (new file)';
+        const base = baseSection(file.baseContent);
         const diff = file.patch?.trim()
           ? `CHANGED HUNKS (report only on lines marked +):\n${parsePatchHunks(file.patch).rendered}`
           : 'CHANGED HUNKS: no diff available';
@@ -21,11 +36,27 @@ export function buildFilesPromptSection(state: GraphState): string {
 
 export function buildRelatedContextBlock(state: GraphState): string {
   const formatted = state.relatedContextFormatted?.trim();
-  if (!formatted) {
+  const context = formatted
+    ? `\n${formatted}\n\nRelated context is for understanding cross-file impact only. Never report findings on these files; report the defect on the changed line in FILES that causes it.\n`
+    : '';
+  return context + buildPreviousFindingsBlock(state);
+}
+
+function buildPreviousFindingsBlock(state: GraphState): string {
+  const previous = state.previousFindings ?? [];
+  if (!previous.length) {
     return '';
   }
 
-  return `\n${formatted}\n\nRelated context is for understanding cross-file impact only. Never report findings on these files; report the defect on the changed line in FILES that causes it.\n`;
+  const lines = previous.map(
+    (f) => `- ${f.file}${f.line ? `:${f.line}` : ''} [${f.severity}] ${f.issue}`,
+  );
+  return `
+PREVIOUS REVIEW FINDINGS (from the last analysis of this PR, before the latest changes):
+${lines.join('\n')}
+
+Re-check each previous finding against the current code. Report it again, on its current line, only if it is still present; omit the ones that were fixed.
+`;
 }
 
 export function logDomainComplete(domain: DomainKey, report: DomainReport): void {

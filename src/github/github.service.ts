@@ -172,6 +172,37 @@ export class GithubService {
     );
   }
 
+  async listReviewComments(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    reviewId: number,
+  ) {
+    return this.githubRequest<
+      Array<{ id: number; path: string; line: number | null; original_line: number | null }>
+    >(
+      user.userId,
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/reviews/${reviewId}/comments?per_page=100`,
+    );
+  }
+
+  /** Replies in an existing review comment thread (REST cannot resolve threads). */
+  async replyToReviewComment(
+    user: AuthenticatedUser,
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    commentId: number,
+    body: string,
+  ) {
+    return this.githubRequest<{ id: number }>(
+      user.userId,
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/comments/${commentId}/replies`,
+      { method: 'POST', body: JSON.stringify({ body }) },
+    );
+  }
+
   async listCommits(
     user: AuthenticatedUser,
     owner: string,

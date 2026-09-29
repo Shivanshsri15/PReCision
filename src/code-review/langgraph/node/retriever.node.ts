@@ -9,6 +9,17 @@ export const createRetrieverNode =
   (retrieverService: RetrieverService) =>
   async (state: GraphState, config?: LangGraphRunnableConfig): Promise<Partial<GraphState>> => {
     const input = state.cleanedInput ?? state.input;
+    if (state.relatedContextFormatted !== undefined) {
+      console.log(
+        `${LOG_PREFIX} retriever node skipped: reusing cached context ` +
+          `(${state.relatedContext?.length ?? 0} chunks)`,
+      );
+      return {
+        relatedContext: state.relatedContext,
+        relatedContextFormatted: state.relatedContextFormatted,
+      };
+    }
+
     console.log(
       `${LOG_PREFIX} retriever node: ${input.owner}/${input.repo}@${input.baseBranch} ` +
         `files=${input.files.length}`,

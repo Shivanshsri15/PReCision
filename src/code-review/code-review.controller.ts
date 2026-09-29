@@ -1,50 +1,40 @@
 import {
   Controller,
+  DefaultValuePipe,
   Get,
   Param,
   ParseBoolPipe,
   ParseIntPipe,
   Post,
   Query,
+  Req,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type {
+  Request as ExpressRequest,
+  Response as ExpressResponse,
+} from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
-import { GithubService } from '../github/github.service.js';
-import type { Finding, PRAnalysisPayload, PRFile } from './langgraph/state.js';
+import { openSse } from '../events/sse.js';
+import {
+  AnalysisJobsService,
+  TERMINAL_EVENTS,
+  type AnalysisJob,
+} from './analysis-jobs.service.js';
 import { CcodeReviewService } from './code-review.service.js';
 
 const LOG_PREFIX = '[code-review]';
 
-async function fetchFileContent(
-  githubService: GithubService,
-  user: AuthenticatedUser,
-  owner: string,
-  repo: string,
-  path: string,
-  ref: string,
-): Promise<string> {
-  try {
-    const filePayload = (await githubService.getRepositoryFile(
-      user,
-      owner,
-      repo,
-      path,
-      ref,
-    )) as { content?: string };
-
-    return typeof filePayload.content === 'string' ? filePayload.content : '';
-  } catch {
-    return '';
-  }
-}
+type AuthedRequest = ExpressRequest & { user: AuthenticatedUser };
 
 @Controller('/api/v1/code-review')
 export class CodeReviewController {
   constructor(
-    private readonly githubService: GithubService,
     private readonly codeReviewService: CcodeReviewService,
+    private readonly jobs: AnalysisJobsService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -62,108 +52,49 @@ export class CodeReviewController {
         `postComments=${postComments ? 'yes' : 'no'}`,
     );
 
-    const pr = (await this.githubService.getPullRequest(
+    const payload = await this.jobs.buildPayload(
       req.user,
       owner,
       repo,
       pullNumber,
-    )) as {
-      number?: number;
-      title?: string;
-      body?: string;
-      head?: { sha?: string; ref?: string };
-      base?: { sha?: string; ref?: string };
-    };
-
-    const prFiles = (await this.githubService.listPullRequestFiles(
-      req.user,
-      owner,
-      repo,
-      pullNumber,
-    )) as Array<{ filename?: string; patch?: string; status?: string }>;
-
-    const headSha = pr?.head?.sha ?? '';
-    const baseSha = pr?.base?.sha ?? '';
-    const baseBranch = pr?.base?.ref ?? 'main';
-    console.log(
-      `${LOG_PREFIX} PR loaded: "${pr?.title ?? `PR #${pullNumber}`}" ` +
-        `base=${baseBranch}@${baseSha.slice(0, 7)} head=${headSha.slice(0, 7)} ` +
-        `prFiles=${prFiles.length}`,
     );
-
-    const files: PRFile[] = await Promise.all(
-      prFiles.map(async (file) => {
-        const filename = file?.filename;
-        if (!filename) {
-          return null;
-        }
-
-        const patch =
-          typeof file?.patch === 'string' && file.patch.trim().length > 0
-            ? file.patch
-            : '';
-
-        const [content, baseContent] = await Promise.all([
-          file.status === 'removed'
-            ? Promise.resolve('')
-            : fetchFileContent(
-                this.githubService,
-                req.user,
-                owner,
-                repo,
-                filename,
-                headSha,
-              ),
-          file.status === 'added'
-            ? Promise.resolve('')
-            : fetchFileContent(
-                this.githubService,
-                req.user,
-                owner,
-                repo,
-                filename,
-                baseSha,
-              ),
-        ]);
-
-        console.log(
-          `${LOG_PREFIX} file prepared: ${filename} ` +
-            `patch=${patch.length} chars head=${content.length} chars base=${baseContent.length} chars`,
-        );
-
-        return { filename, patch, content, baseContent } satisfies PRFile;
-      }),
-    ).then((results) => results.filter((file): file is PRFile => file !== null));
-
-    console.log(
-      `${LOG_PREFIX} payload ready: ${files.length} files for analysis`,
+    const result = await this.codeReviewService.analyzePR(
+      req.user.userId,
+      payload,
     );
-
-    const payload: PRAnalysisPayload = {
-      prId: pr?.number ?? pullNumber,
-      title: pr?.title ?? `PR #${pullNumber}`,
-      description: pr?.body ?? undefined,
-      owner,
-      repo,
-      baseBranch,
-      baseSha,
-      headSha,
-      files,
-    };
-
-    const result = await this.codeReviewService.analyzePR(req.user.userId, payload);
     if (!postComments) {
       return result;
     }
 
-    const report = result as Record<string, unknown>;
-    const review = await this.codeReviewService.postReviewComments(
-      req.user,
-      payload,
-      Array.isArray(report.findings) ? (report.findings as Finding[]) : [],
-      typeof report.overallSummary === 'string' ? report.overallSummary : '',
-    );
+    const review = await this.jobs.postComments(req.user, payload, result);
     return { ...result, review };
+  }
+
+  /**
+   * Starts (or joins) a background analysis and streams its Server-Sent
+   * Events: `started`, `run`, one `step` per finished graph node, `result`,
+   * optional `review`, then `done` — or `error`. Disconnecting does not stop
+   * the analysis; re-attach with `GET /runs/:runId/stream`.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('/repositories/:owner/:repo/pulls/:pullNumber/analyze/stream')
+  analyzePullRequestStream(
+    @Req() req: AuthedRequest,
+    @Param('owner') owner: string,
+    @Param('repo') repo: string,
+    @Param('pullNumber', ParseIntPipe) pullNumber: number,
+    @Res() res: ExpressResponse,
+    @Query('postComments', new ParseBoolPipe({ optional: true }))
+    postComments?: boolean,
+  ) {
+    const job = this.jobs.start(
+      req.user,
+      owner,
+      repo,
+      pullNumber,
+      Boolean(postComments),
+    );
+    this.pipeJob(job, req, res);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -180,5 +111,121 @@ export class CodeReviewController {
       repo,
       pullNumber,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/runs')
+  async listUserRuns(
+    @Request() req: { user: AuthenticatedUser },
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+    @Query('owner') owner?: string,
+    @Query('repo') repo?: string,
+  ) {
+    return this.codeReviewService.listUserRuns(req.user.userId, {
+      limit: Math.min(Math.max(limit, 1), 200),
+      owner,
+      repo,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/runs/:runId')
+  async getRun(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('runId') runId: string,
+  ) {
+    return this.codeReviewService.getRun(req.user.userId, runId);
+  }
+
+  /**
+   * Re-attaches to a run's event stream: replays progress so far and follows
+   * it live. Runs no longer in memory are answered from the database.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('/runs/:runId/stream')
+  async attachRunStream(
+    @Req() req: AuthedRequest,
+    @Param('runId') runId: string,
+    @Res() res: ExpressResponse,
+  ) {
+    const job = this.jobs.findByRun(req.user.userId, runId);
+    if (job) {
+      this.pipeJob(job, req, res);
+      return;
+    }
+
+    const sse = openSse(res);
+    try {
+      const run = await this.codeReviewService.getRun(req.user.userId, runId);
+      if (run.status === 'completed') {
+        sse.send('run', {
+          runId,
+          startedAt: (run as { createdAt?: Date }).createdAt,
+        });
+        sse.send('result', {
+          runId,
+          rerunOf: run.rerunOf,
+          ...(run.finalReport ?? {}),
+        });
+        sse.send('done', { runId });
+      } else {
+        sse.send('error', {
+          status: 410,
+          message: run.error ?? 'This analysis is no longer running.',
+        });
+      }
+    } catch (error) {
+      sse.send('error', {
+        status: 404,
+        message: error instanceof Error ? error.message : 'Run not found',
+      });
+    } finally {
+      sse.end();
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('/runs/:runId/cancel')
+  cancelRun(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('runId') runId: string,
+  ) {
+    return { cancelled: this.jobs.cancel(req.user.userId, runId) };
+  }
+
+  /** Resolves the PR's open PReCision comments; the next analysis starts fresh. */
+  @UseGuards(JwtAuthGuard)
+  @Post('/runs/:runId/complete')
+  async markRunComplete(
+    @Request() req: { user: AuthenticatedUser },
+    @Param('runId') runId: string,
+  ) {
+    return this.codeReviewService.markComplete(req.user, runId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('/stats')
+  async getStats(@Request() req: { user: AuthenticatedUser }) {
+    return this.codeReviewService.getStats(req.user.userId);
+  }
+
+  private pipeJob(job: AnalysisJob, req: ExpressRequest, res: ExpressResponse) {
+    const sse = openSse(res);
+    let finished = false;
+    const unsubscribe = this.jobs.attach(job, ({ event, data }) => {
+      sse.send(event, data);
+      if (TERMINAL_EVENTS.has(event)) {
+        finished = true;
+        sse.end();
+      }
+    });
+    if (finished) {
+      unsubscribe();
+      return;
+    }
+    req.on('close', () => {
+      unsubscribe();
+      sse.dispose();
+    });
   }
 }

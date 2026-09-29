@@ -1,23 +1,15 @@
-import type { GraphState } from '../state.js';
+import { DOMAIN_KEYS, type GraphState } from '../state.js';
 
 const LOG_PREFIX = '[code-review]';
 
-/**
- * Other domains' weakAreas are intentionally not forwarded: they steer
- * bugDetection into re-reporting security/performance findings.
- */
-export const joinNode = async (state: GraphState): Promise<Partial<GraphState>> => {
-  const quality = state.domainReports?.quality;
-  const security = state.domainReports?.security;
-  const performance = state.domainReports?.performance;
-
-  if (!quality || !security || !performance) {
-    return {};
-  }
-
+/** Barrier after the parallel reviewers; records the user focus prompt for the report. */
+export const joinNode = (state: GraphState): Partial<GraphState> => {
+  const done = DOMAIN_KEYS.filter((domain) => state.domainReports?.[domain]);
   const extraPrompt = state.cleanedInput?.extraPrompt?.trim();
 
-  console.log(`${LOG_PREFIX} joinNode: extraPrompt=${extraPrompt ? 'yes' : 'no'}`);
+  console.log(
+    `${LOG_PREFIX} joinNode: reviewers=${done.join(',')} extraPrompt=${extraPrompt ? 'yes' : 'no'}`,
+  );
 
   return {
     bugDetectionPromptAddendum: extraPrompt
