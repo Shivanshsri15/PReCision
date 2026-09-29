@@ -1,5 +1,5 @@
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import { PARALLEL_DOMAIN_KEYS, type DomainReport, type GraphState } from '../state.js';
+import type { DomainReport, GraphState } from '../state.js';
 import { createGemini } from '../gemini.factory.js';
 import {
   buildDomainReport,
@@ -13,44 +13,22 @@ import { FINDING_SCHEMA, buildReviewRules } from './review-schema.js';
 
 const LOG_PREFIX = '[code-review]';
 
-export function buildAlreadyReportedBlock(state: GraphState): string {
-  const lines = PARALLEL_DOMAIN_KEYS.flatMap(
-    (domain) => state.domainReports?.[domain]?.findings ?? [],
-  ).map((f) => `- ${f.file}${f.line ? `:${f.line}` : ''} ${f.issue}`);
-
-  if (!lines.length) {
-    return '';
-  }
-
-  return `ALREADY REPORTED by other reviewers (do not repeat these, even in different words):
-${Array.from(new Set(lines)).join('\n')}
-
-Report only NEW correctness bugs not covered above. Return an empty findings array if there are none.
-`;
-}
-
 /**
- * Bug detection pass — runs after parallel domain reviews and joinNode shaping.
+ * Bug detection pass — runs in parallel with the quality, security and
+ * performance reviewers; overlapping findings are dropped by the assembler.
  */
 export const bugDetectionReviewerNode = async (
   state: GraphState,
   config?: LangGraphRunnableConfig,
 ): Promise<Partial<GraphState>> => {
-  const quality = state.domainReports?.quality;
-  const security = state.domainReports?.security;
-  const performance = state.domainReports?.performance;
-
-  if (!quality || !security || !performance) {
-    return {};
-  }
-
-  console.log(`${LOG_PREFIX} bugDetection node: invoking LLM for PR #${state.input.prId}`);
+  console.log(
+    `${LOG_PREFIX} bugDetection node: invoking LLM for PR #${state.input.prId}`,
+  );
 
   const model = createGemini(config);
   const filesText = buildFilesPromptSection(state);
   const relatedContext = buildRelatedContextBlock(state);
-  const addendum = state.bugDetectionPromptAddendum?.trim();
-  const alreadyReported = buildAlreadyReportedBlock(state);
+  const addendum = state.cleanedInput?.extraPrompt?.trim();
 
   const prompt = `
 You are a senior software engineer doing BUG DETECTION in a PR review.
@@ -70,7 +48,6 @@ ${state.cleanedInput?.description ?? ''}
 FILES:
 ${filesText}
 ${relatedContext}
-${alreadyReported}
 ${buildReviewRules('bugDetection')}
 ${FINDING_SCHEMA}
 `;

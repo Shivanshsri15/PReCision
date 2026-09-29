@@ -2,12 +2,10 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import type { PRFile } from '../../code-review/langgraph/state.js';
-import { chunkFile } from '../chunking/chunk-file.js';
 import {
   extractImportPaths,
   resolveImportCandidates,
 } from '../chunking/symbol-extractor.js';
-import { shouldIndex } from '../chunking/should-index.js';
 import { EmbeddingsService } from '../embeddings/embeddings.service.js';
 import {
   RepoIndex,
@@ -27,6 +25,10 @@ import {
 } from './context-assembler.js';
 
 const LOG_PREFIX = '[code-review]';
+const SEMANTIC_TIMEOUT_MS = 8000;
+const SEMANTIC_MAX_FILES = 20;
+const SEMANTIC_QUERY_CHARS = 600;
+const SEMANTIC_RESULTS_PER_FILE = 4;
 
 export interface RetrievalInput {
   owner: string;
@@ -45,7 +47,11 @@ export class RetrieverService {
     private readonly embeddingsService: EmbeddingsService,
   ) {}
 
-  async ensureIndexed(owner: string, repo: string, branch: string): Promise<RepoIndexDocument> {
+  async ensureIndexed(
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<RepoIndexDocument> {
     const record = await this.repoIndexModel.findOne({ owner, repo, branch });
     if (!record || record.status !== 'ready') {
       throw new ConflictException({
@@ -86,58 +92,33 @@ export class RetrieverService {
 
     const changedFiles = files.map((file) => normalizePath(file.filename));
     const changedSet = new Set(changedFiles);
+    const startedAt = Date.now();
 
-    // V1: embed the PATCH only. The HEAD and symbol-name query inputs were
-    // dropped — they're largely redundant with the patch, and embedding the big
-    // concatenated file content was the slow part of retrieval.
-    const patchContent = files.map((file) => file.patch).join('\n\n');
-
-    const [importGraph, pathTestResults, pathSiblingResults] = await Promise.all([
-      this.retrieveImportGraph(repoId, baseBranch, files, changedSet),
-      this.retrievePathTests(repoId, baseBranch, files, changedSet),
-      this.retrievePathSiblings(repoId, baseBranch, files, changedSet),
-    ]);
-
-    const semanticQueryText = patchContent.trim().slice(0, 6000);
-
-    let semanticResults: RetrievedChunk[] = [];
-    if (semanticQueryText.trim().length > 0) {
-      try {
-        const embedding = await this.embeddingsService.embedQuery(
-          semanticQueryText,
-          geminiApiKey,
-        );
-        semanticResults = await this.vectorStore.query(
-          embedding,
+    // Every source is one database round trip, all in parallel. The merged
+    // context is capped at a few thousand chars, so anything slow is skipped.
+    const [importGraph, pathTestResults, pathSiblingResults, semanticResults] =
+      await Promise.all([
+        this.retrieveImportGraph(repoId, baseBranch, files, changedSet),
+        this.retrievePathTests(repoId, baseBranch, files, changedFiles),
+        this.retrievePathSiblings(repoId, baseBranch, files, changedFiles),
+        this.retrieveSemantic(
           repoId,
           baseBranch,
-          12,
+          files,
           changedFiles,
-        );
-        semanticResults.forEach((chunk) => {
-          chunk.source = 'semantic-query';
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `${LOG_PREFIX} semantic vector search skipped — ${message}`,
-        );
-      }
-    }
+          geminiApiKey,
+        ),
+      ]);
 
     const merged = mergeByFixedPriority(
-      [
-        importGraph,
-        pathTestResults,
-        pathSiblingResults,
-        semanticResults,
-      ],
+      [importGraph, pathTestResults, semanticResults, pathSiblingResults],
       changedFiles,
     );
 
     console.log(
       `${LOG_PREFIX} retrieval sources: import=${importGraph.length} tests=${pathTestResults.length} ` +
-        `siblings=${pathSiblingResults.length} semantic=${semanticResults.length} → merged=${merged.length}`,
+        `siblings=${pathSiblingResults.length} semantic=${semanticResults.length} → merged=${merged.length} ` +
+        `in ${Date.now() - startedAt}ms`,
     );
     if (merged.length > 0) {
       console.log(
@@ -152,104 +133,204 @@ export class RetrieverService {
     };
   }
 
+  /** Resolves every import of the changed files, then loads all candidate paths in one query. */
   private async retrieveImportGraph(
     repoId: string,
     branch: string,
     files: PRFile[],
     changedSet: Set<string>,
   ): Promise<RetrievedChunk[]> {
-    const results: RetrievedChunk[] = [];
-    const seenPaths = new Set<string>();
-
+    const candidateGroups: string[][] = [];
     for (const file of files) {
-      const source = file.content || file.patch;
-      const imports = extractImportPaths(source);
-
-      for (const importPath of imports) {
-        const candidates = resolveImportCandidates(importPath, file.filename);
-        for (const candidate of candidates) {
-          const normalized = normalizePath(candidate);
-          if (changedSet.has(normalized) || seenPaths.has(normalized)) {
-            continue;
-          }
-
-          const chunks = await this.vectorStore.getChunksForPath(
-            repoId,
-            branch,
-            normalized,
-          );
-          if (chunks.length > 0) {
-            seenPaths.add(normalized);
-            results.push(...chunks.slice(0, 3));
-            break;
-          }
-        }
+      for (const importPath of extractImportPaths(file.content || file.patch)) {
+        const candidates = resolveImportCandidates(importPath, file.filename)
+          .map(normalizePath)
+          .filter((candidate) => !changedSet.has(candidate));
+        if (candidates.length) candidateGroups.push(candidates);
       }
     }
+    if (!candidateGroups.length) return [];
 
-    return results;
+    try {
+      const byPath = await this.vectorStore.getChunksForPaths(
+        repoId,
+        branch,
+        [...new Set(candidateGroups.flat())],
+        'import-graph',
+      );
+      const results: RetrievedChunk[] = [];
+      const seenPaths = new Set<string>();
+      for (const candidates of candidateGroups) {
+        const hit = candidates.find((candidate) => byPath.has(candidate));
+        if (!hit || seenPaths.has(hit)) continue;
+        seenPaths.add(hit);
+        results.push(...byPath.get(hit)!.slice(0, 3));
+      }
+      return results;
+    } catch (error) {
+      this.warnSkipped('import graph', error);
+      return [];
+    }
   }
 
   private async retrievePathTests(
     repoId: string,
     branch: string,
     files: PRFile[],
-    changedSet: Set<string>,
+    changedFiles: string[],
   ): Promise<RetrievedChunk[]> {
-    const results: RetrievedChunk[] = [];
+    const patterns = [
+      ...new Set(
+        files
+          .map(
+            (file) =>
+              normalizePath(file.filename)
+                .split('/')
+                .pop()
+                ?.replace(/\.[^.]+$/, '') ?? '',
+          )
+          .filter(Boolean),
+      ),
+    ].map(buildTestPattern);
+    if (!patterns.length) return [];
 
-    for (const file of files) {
-      const normalized = normalizePath(file.filename);
-      const baseName = normalized.split('/').pop()?.replace(/\.[^.]+$/, '') ?? '';
-      if (!baseName) {
-        continue;
-      }
-
-      const pattern = buildTestPattern(baseName);
-      const chunks = await this.vectorStore.queryByPathPattern(
+    try {
+      const chunks = await this.vectorStore.findByPaths(
         repoId,
         branch,
-        pattern,
-        5,
-        Array.from(changedSet),
+        { patterns },
+        10,
+        'path-pattern',
+        changedFiles,
       );
-      results.push(...chunks.filter((chunk) => isTestOrSpecPath(chunk.path)));
+      return chunks.filter((chunk) => isTestOrSpecPath(chunk.path));
+    } catch (error) {
+      this.warnSkipped('related tests', error);
+      return [];
     }
-
-    return results;
   }
 
   private async retrievePathSiblings(
     repoId: string,
     branch: string,
     files: PRFile[],
-    changedSet: Set<string>,
+    changedFiles: string[],
   ): Promise<RetrievedChunk[]> {
-    const results: RetrievedChunk[] = [];
-    const seenPrefixes = new Set<string>();
+    const prefixes = [
+      ...new Set(
+        files.map((file) => getDirectoryPrefix(file.filename)).filter(Boolean),
+      ),
+    ];
+    if (!prefixes.length) return [];
 
-    for (const file of files) {
-      const prefix = getDirectoryPrefix(file.filename);
-      if (!prefix || seenPrefixes.has(prefix)) {
-        continue;
-      }
-      seenPrefixes.add(prefix);
-
-      const chunks = await this.vectorStore.queryByPathPrefix(
+    try {
+      const chunks = await this.vectorStore.findByPaths(
         repoId,
         branch,
-        prefix,
-        5,
-        Array.from(changedSet),
+        { prefixes },
+        10,
+        'path-prefix',
+        changedFiles,
       );
-
-      results.push(
-        ...chunks.filter(
-          (chunk) => !isTestOrSpecPath(chunk.path) && !changedSet.has(normalizePath(chunk.path)),
-        ),
-      );
+      return chunks.filter((chunk) => !isTestOrSpecPath(chunk.path));
+    } catch (error) {
+      this.warnSkipped('sibling files', error);
+      return [];
     }
-
-    return results;
   }
+
+  /**
+   * One embedding per changed file (single batch call), one vector search per
+   * file, results interleaved by rank so every file contributes its best match
+   * first. Bounded so a slow embedding never stalls the review.
+   */
+  private async retrieveSemantic(
+    repoId: string,
+    branch: string,
+    files: PRFile[],
+    changedFiles: string[],
+    geminiApiKey?: string,
+  ): Promise<RetrievedChunk[]> {
+    const queries = files
+      .map(buildFileQuery)
+      .filter((query): query is string => Boolean(query))
+      .slice(0, SEMANTIC_MAX_FILES);
+    if (!queries.length) return [];
+
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timed out after ${SEMANTIC_TIMEOUT_MS}ms`)),
+        SEMANTIC_TIMEOUT_MS,
+      );
+    });
+
+    try {
+      const search = (async () => {
+        const embeddings = await this.embeddingsService.embedQueries(
+          queries,
+          geminiApiKey,
+        );
+        return Promise.all(
+          embeddings.map((embedding) =>
+            this.vectorStore.query(
+              embedding,
+              repoId,
+              branch,
+              SEMANTIC_RESULTS_PER_FILE,
+              changedFiles,
+            ),
+          ),
+        );
+      })();
+      const perFile = await Promise.race([search, timeout]);
+      console.log(
+        `${LOG_PREFIX} semantic search: queries=${queries.length} hits=${perFile.flat().length}`,
+      );
+      return interleaveUnique(perFile).map((chunk) => ({
+        ...chunk,
+        source: 'semantic-query',
+      }));
+    } catch (error) {
+      this.warnSkipped('semantic vector search', error);
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private warnSkipped(source: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`${LOG_PREFIX} ${source} skipped — ${message}`);
+  }
+}
+
+/** `File: <path>` followed by the patch's added lines, without diff markers. */
+function buildFileQuery(file: PRFile): string | null {
+  const added = (file.patch ?? '')
+    .split('\n')
+    .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+    .map((line) => line.slice(1).trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, SEMANTIC_QUERY_CHARS);
+  return added ? `File: ${normalizePath(file.filename)}\n${added}` : null;
+}
+
+/** Rank 1 of every list, then rank 2, …; drops chunks already taken. */
+function interleaveUnique(lists: RetrievedChunk[][]): RetrievedChunk[] {
+  const seen = new Set<string>();
+  const merged: RetrievedChunk[] = [];
+  const depth = Math.max(0, ...lists.map((list) => list.length));
+  for (let rank = 0; rank < depth; rank++) {
+    for (const list of lists) {
+      const chunk = list[rank];
+      if (!chunk) continue;
+      const key = `${normalizePath(chunk.path)}:${chunk.startLine}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(chunk);
+    }
+  }
+  return merged;
 }

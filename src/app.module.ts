@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { GithubModule } from './github/github.module.js';
 import { CodeReviewModule } from './code-review/code-review.module.js';
 import { RepoRagModule } from './repo-rag/repo-rag.module.js';
+import { EventsModule } from './events/events.module.js';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { RepoRagModule } from './repo-rag/repo-rag.module.js';
         serverSelectionTimeoutMS: 5000,
       }),
     }),
+    EventsModule,
     AuthModule,
     GithubModule,
     RepoRagModule,

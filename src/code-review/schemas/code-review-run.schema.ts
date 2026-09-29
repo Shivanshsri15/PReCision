@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
+import type { Finding, RetrievedChunk } from '../langgraph/state.js';
 
 export const CODE_REVIEW_RUN_STATUSES = [
   'running',
@@ -40,6 +41,43 @@ export class CodeReviewRun {
 
   @Prop()
   error?: string;
+
+  /** Once marked complete, the next analysis of the PR starts fresh instead of re-running this one. */
+  @Prop({ default: false })
+  markedComplete!: boolean;
+
+  @Prop()
+  markedCompleteAt?: Date;
+
+  /** The run this one re-ran (reusing its cached context and findings). */
+  @Prop()
+  rerunOf?: string;
+
+  /** Retrieved RAG context, reused by re-runs. Excluded from queries unless selected. */
+  @Prop({ type: MongooseSchema.Types.Mixed, select: false })
+  contextCache?: ContextCache;
+
+  @Prop({ type: [MongooseSchema.Types.Mixed], default: undefined })
+  postedComments?: PostedComment[];
+
+  @Prop()
+  reviewUrl?: string;
+}
+
+export interface ContextCache {
+  chunks: RetrievedChunk[];
+  formatted: string;
+}
+
+export interface PostedComment {
+  /** GitHub review comment id; absent when the finding was only listed in the review body. */
+  commentId?: number;
+  file: string;
+  line?: number;
+  issue: string;
+  severity: Finding['severity'];
+  resolved: boolean;
+  resolvedAt?: Date;
 }
 
 export type CodeReviewRunDocument = HydratedDocument<CodeReviewRun>;

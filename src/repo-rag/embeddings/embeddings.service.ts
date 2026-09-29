@@ -1,4 +1,8 @@
-import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
+import {
+  type BatchEmbedContentsRequest,
+  GoogleGenerativeAI,
+  TaskType,
+} from '@google/generative-ai';
 import { Embeddings } from '@langchain/core/embeddings';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -23,7 +27,8 @@ export class EmbeddingsService {
 
   constructor(private readonly config: ConfigService) {
     this.model = this.config.getOrThrow<string>('EMBEDDING_MODEL');
-    this.outputDimensionality = this.config.get<number>('EMBEDDING_DIMS') ?? 768;
+    this.outputDimensionality =
+      this.config.get<number>('EMBEDDING_DIMS') ?? 768;
   }
 
   /** `apiKey` is the caller's resolved Gemini key; falls back to GEMINI_API_KEY. */
@@ -64,22 +69,45 @@ export class EmbeddingsService {
     });
   }
 
+  /**
+   * A single small request, so it is not queued behind document batches:
+   * otherwise a review would wait for any in-progress indexing to finish.
+   */
   async embedQuery(text: string, apiKey?: string): Promise<number[]> {
     const model = this.getModel(apiKey);
-    return this.runSerialized(async () => {
-      const response = await this.withRetry(() =>
-        model.embedContent({
-          content: {
-            role: 'user',
-            parts: [{ text }],
-          },
-          taskType: TaskType.RETRIEVAL_QUERY,
-          outputDimensionality: this.outputDimensionality,
-        } as any),
-      );
+    const response = await this.withRetry(() =>
+      model.embedContent({
+        content: {
+          role: 'user',
+          parts: [{ text }],
+        },
+        taskType: TaskType.RETRIEVAL_QUERY,
+        outputDimensionality: this.outputDimensionality,
+      } as any),
+    );
 
-      return response.embedding.values ?? [];
-    });
+    return response.embedding.values ?? [];
+  }
+
+  /** Many short queries in one request; not queued behind document batches. */
+  async embedQueries(texts: string[], apiKey?: string): Promise<number[][]> {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const model = this.getModel(apiKey);
+    const response = await this.withRetry(() =>
+      model.batchEmbedContents({
+        requests: texts.map((text) => ({
+          content: { role: 'user', parts: [{ text }] },
+          taskType: TaskType.RETRIEVAL_QUERY,
+          // Supported by the API but missing from the SDK's request type.
+          outputDimensionality: this.outputDimensionality,
+        })) as unknown as BatchEmbedContentsRequest['requests'],
+      }),
+    );
+
+    return response.embeddings.map((embedding) => embedding.values ?? []);
   }
 
   getQueryEmbeddingsModel(): Embeddings {
@@ -103,7 +131,9 @@ export class EmbeddingsService {
 
     let model = this.modelsByKey.get(key);
     if (!model) {
-      model = new GoogleGenerativeAI(key).getGenerativeModel({ model: this.model });
+      model = new GoogleGenerativeAI(key).getGenerativeModel({
+        model: this.model,
+      });
       this.modelsByKey.set(key, model);
     }
     return model;

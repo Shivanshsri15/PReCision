@@ -56,7 +56,7 @@ The user's Gemini key (cached in memory for 10 minutes) is used for PR reviews, 
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
 | `GET` | `/api/v1/github/oauth/url` | Public | Get GitHub OAuth authorization URL |
-| `GET` | `/api/v1/github/oauth/callback` | Public | OAuth callback (`?code=&state=`) → returns application JWT |
+| `GET` | `/api/v1/github/oauth/callback` | Public | OAuth callback (`?code=&state=`) → redirects to `${FRONTEND_URL}/auth/callback#token=<JWT>` (or `#error=`) |
 
 ---
 
@@ -81,7 +81,15 @@ The user's Gemini key (cached in memory for 10 minutes) is used for PR reviews, 
 
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
-| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport`. Add `?postComments=true` to also post the findings to the PR as a GitHub review (inline comments on diff lines) |
+| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze` | JWT | Run AI-powered PR analysis and return `finalReport` (requires indexed base branch). Add `?postComments=true` to also post the findings to the PR as a GitHub review (inline comments on diff lines) |
+| `POST` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/analyze/stream` | JWT | Starts (or joins the running) background analysis and streams it as Server-Sent Events: `started`, `run`, `step` (per finished graph node), `result`, `review`, `done` / `error`. Disconnecting does not stop the analysis |
+| `GET` | `/api/v1/code-review/runs/:runId/stream` | JWT | Re-attach to a run (e.g. after a page refresh): replays its events so far, then follows live; finished runs are answered from the database |
+| `POST` | `/api/v1/code-review/runs/:runId/cancel` | JWT | Cancel a running analysis |
+| `GET` | `/api/v1/code-review/repositories/:owner/:repo/pulls/:pullNumber/runs` | JWT | List persisted analysis runs for a pull request |
+| `GET` | `/api/v1/code-review/runs?limit&owner&repo` | JWT | The user's runs across all PRs (summary: status + severity counts) |
+| `GET` | `/api/v1/code-review/runs/:runId` | JWT | One full run including `finalReport` |
+| `POST` | `/api/v1/code-review/runs/:runId/complete` | JWT | Mark a run complete and resolve the PR's open PReCision comments; the next analysis starts fresh |
+| `GET` | `/api/v1/code-review/stats` | JWT | Dashboard totals: indexed repos/chunks, reviews, findings by severity |
 
 ---
 
@@ -89,9 +97,18 @@ The user's Gemini key (cached in memory for 10 minutes) is used for PR reviews, 
 
 | Method | Endpoint | Auth | Description |
 |----------|----------|----------|----------|
-| `POST` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/index` | JWT | Registers the repo push webhook (`GITHUB_WEBHOOK_URL`) first, then fully indexes the branch |
+| `GET` | `/api/v1/repo-index/repositories` | JWT | Branch index records created by the current user |
+| `POST` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/index` | JWT | Starts a background full index (registering the repo push webhook `GITHUB_WEBHOOK_URL` first) and returns immediately; progress arrives on the events stream |
 | `GET` | `/api/v1/repo-index/repositories/:owner/:repo/branches/:branch/status` | JWT | Index status, counts, and webhook info |
-| `POST` | `/api/v1/github/webhook` | HMAC signature | GitHub push receiver; incrementally re-indexes pushed branches that are indexed, ignores others |
+| `POST` | `/api/v1/github/webhook` | HMAC signature | GitHub push receiver; notifies the indexing user and incrementally re-indexes pushed branches in the background, ignores others |
+
+---
+
+### Events — `/api/v1/events`
+
+| Method | Endpoint | Auth | Description |
+|----------|----------|----------|----------|
+| `GET` | `/api/v1/events/stream` | JWT | Per-user Server-Sent Events. Starts with a `snapshot` (`indexing` jobs with their recent files, active `analyses`), then one `message` per event: `push.received`, `index.started`, `index.progress`, `index.file`, `index.completed`, `index.failed`, `analysis.started`, `analysis.finished` |
 
 ## Architecture Overview
 

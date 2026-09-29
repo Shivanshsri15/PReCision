@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module.js';
 import { GithubModule } from '../github/github.module.js';
 import { RepoRagModule } from '../repo-rag/repo-rag.module.js';
+import { AnalysisJobsService } from './analysis-jobs.service.js';
 import { CodeReviewController } from './code-review.controller.js';
 import { CcodeReviewService } from './code-review.service.js';
 import {
@@ -20,6 +21,6 @@ import {
     ]),
   ],
   controllers: [CodeReviewController],
-  providers: [CcodeReviewService],
+  providers: [CcodeReviewService, AnalysisJobsService],
 })
 export class CodeReviewModule {}

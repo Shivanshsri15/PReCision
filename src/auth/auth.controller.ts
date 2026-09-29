@@ -21,7 +21,10 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Get('/gemini-key')
   async getGeminiKeyStatus(@Request() req: { user: AuthenticatedUser }) {
-    return { configured: await this.geminiKeyService.hasUserKey(req.user.userId) };
+    return {
+      configured: await this.geminiKeyService.hasUserKey(req.user.userId),
+      envFallback: this.geminiKeyService.hasEnvKey(),
+    };
   }
 
   @UseGuards(JwtAuthGuard)
