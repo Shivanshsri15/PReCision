@@ -22,6 +22,6 @@ export const createGemini = (config?: LangGraphRunnableConfig) => {
     maxOutputTokens: 4096,
     // The default (6 retries, exponential backoff) turns a quota rejection
     // into minutes of apparent latency before the run fails.
-    maxRetries: 1,
+    maxRetries: 3,
   });
 };
